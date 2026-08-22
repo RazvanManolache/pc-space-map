@@ -1,0 +1,13 @@
+**/bin/
+**/obj/
+dist/
+reports/
+.vs/
+*.user
+*.suo
+*.cache
+*.tmp
+*.log
+api-screenshot-test.png
+scan-test.json
+*.pdb
