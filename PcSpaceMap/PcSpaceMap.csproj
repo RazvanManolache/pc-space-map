@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net9.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>PC Space Map</AssemblyName>
+    <RootNamespace>PcSpaceMap</RootNamespace>
+    <Version>0.2.0</Version>
+    <Authors>PC Maintenance Toolkit</Authors>
+    <Description>A local disk inventory and cleanup review tool for Windows.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+</Project>
