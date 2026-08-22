@@ -1,0 +1,55 @@
+<Window x:Class="PcSpaceMap.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="PC Space Map" Width="1520" Height="960" MinWidth="1120" MinHeight="720"
+        WindowStartupLocation="CenterScreen" Background="{StaticResource AppBackground}" Foreground="{StaticResource PrimaryText}">
+    <Grid x:Name="AppSurface" Margin="18" Background="{StaticResource AppBackground}">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <Grid Grid.Row="0" Margin="0,0,0,14">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <StackPanel>
+                <TextBlock Text="PC SPACE MAP" FontSize="12" FontWeight="Bold" Foreground="{StaticResource Accent}"/>
+                <TextBlock Text="See what is using your storage" FontSize="25" FontWeight="SemiBold" Margin="0,3,0,0"/>
+                <TextBlock Text="A read-only inventory with cautious, explainable cleanup suggestions across multiple disks." Foreground="{StaticResource SecondaryText}" Margin="0,4,0,0"/>
+            </StackPanel>
+            <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                <Border Background="#102236" BorderBrush="#1F5267" BorderThickness="1" CornerRadius="7" Padding="12,7">
+                    <TextBlock Text="READ-ONLY · NO DELETIONS" Foreground="#67E8F9" FontSize="11" FontWeight="Bold"/>
+                </Border>
+                <Border Background="#102236" BorderBrush="#1F5267" BorderThickness="1" CornerRadius="5" Padding="7,3" Margin="0,8,0,0">
+                    <TextBlock x:Name="AgentApiText" Text="LOCAL API · STARTING" Foreground="#67E8F9" FontSize="9" FontWeight="Bold" VerticalAlignment="Center"/>
+                </Border>
+            </StackPanel>
+        </Grid>
+
+        <Border Grid.Row="1" Background="{StaticResource PanelBackground}" BorderBrush="{StaticResource PanelBorder}" BorderThickness="1" CornerRadius="9" Padding="10" Margin="0,0,0,12">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <ComboBox x:Name="QuickPathBox" IsEditable="False" IsTextSearchEnabled="False" VerticalContentAlignment="Center" MinWidth="420" Margin="3"/>
+                <Button Grid.Column="1" x:Name="OpenTabButton" Content="Open tab" Click="OpenTabButton_Click"/>
+                <Button Grid.Column="2" x:Name="OpenAndScanButton" Content="Open + scan" Style="{StaticResource PrimaryButton}" Click="OpenAndScanButton_Click"/>
+                <Button Grid.Column="3" x:Name="ScanAllButton" Content="Scan all drives" Click="ScanAllButton_Click"/>
+                <Button Grid.Column="4" x:Name="CloseTabButton" Content="Close tab" Click="CloseTabButton_Click"/>
+            </Grid>
+        </Border>
+
+        <TabControl Grid.Row="2" x:Name="DiskTabs" SelectionChanged="DiskTabs_SelectionChanged"/>
+
+        <TextBlock Grid.Row="3" x:Name="ShellStatusText" Text="Open a tab for a disk or folder, then scan it." Foreground="{StaticResource SecondaryText}" Margin="2,10,2,0" TextTrimming="CharacterEllipsis"/>
+    </Grid>
+</Window>
