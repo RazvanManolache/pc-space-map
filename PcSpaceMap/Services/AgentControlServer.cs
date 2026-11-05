@@ -45,8 +45,10 @@ internal sealed class AgentControlServer : IAsyncDisposable
         };
         var builder = WebApplication.CreateBuilder(options);
         builder.Logging.ClearProviders();
+        builder.WebHost.PreferHostingUrls(false);
         builder.WebHost.ConfigureKestrel(server =>
         {
+            server.Configure(new Microsoft.Extensions.Configuration.ConfigurationBuilder().Build(), reloadOnChange: false);
             server.AddServerHeader = false;
             server.Listen(IPAddress.Loopback, 0);
         });
@@ -71,7 +73,7 @@ internal sealed class AgentControlServer : IAsyncDisposable
         app.MapGet("/health", () => Results.Json(new
         {
             app = "PC Space Map",
-            version = "0.3.0",
+            version = App.AppVersion,
             processId = Environment.ProcessId,
             loopbackOnly = true,
             authenticatedInventoryApi = true
@@ -89,6 +91,11 @@ internal sealed class AgentControlServer : IAsyncDisposable
                 "GET /api/largest?under=<optional>&limit=100",
                 "GET /api/suggestions",
                 "GET /api/issues",
+                "GET /api/changes",
+                "GET /api/children?path=<optional>&offset=0&limit=200",
+                "POST /api/update",
+                "POST /api/update-folder { path }",
+                "POST /api/open-saved { path }",
                 "GET /api/screenshot",
                 "POST /api/scan { path }",
                 "POST /api/navigate { path?, tab?, selectOnly? }",
@@ -113,6 +120,16 @@ internal sealed class AgentControlServer : IAsyncDisposable
         });
         app.MapGet("/api/suggestions", async () => Results.Json(await OnUiAsync(_window.BuildAgentSuggestions)));
         app.MapGet("/api/issues", async () => Results.Json(await OnUiAsync(_window.BuildAgentIssues)));
+        app.MapGet("/api/changes", async () => Results.Json(await OnUiAsync(_window.BuildAgentChanges)));
+        app.MapGet("/api/children", async (HttpRequest request) =>
+        {
+            var offset = ParseBoundedInt(request.Query["offset"].FirstOrDefault(), 0, 0, int.MaxValue);
+            var limit = ParseBoundedInt(request.Query["limit"].FirstOrDefault(), 200, 1, 1000);
+            return Results.Json(await OnUiAsync(() => _window.BuildAgentChildren(request.Query["path"].FirstOrDefault(), offset, limit)));
+        });
+        app.MapPost("/api/update", async () => Results.Json(new { accepted = await OnUiAsync(_window.BeginAgentUpdate) }));
+        app.MapPost("/api/update-folder", async (AgentScanRequest request) => Results.Json(new { accepted = await OnUiAsync(() => _window.BeginAgentUpdateFolder(request.Path)) }));
+        app.MapPost("/api/open-saved", async (AgentScanRequest request) => Results.Json(new { accepted = await OnUiAsync(() => _window.BeginAgentOpenSaved(request.Path)) }));
         app.MapGet("/api/screenshot", async () =>
         {
             var png = await OnUiAsync(_window.CaptureAgentScreenshot);
@@ -134,19 +151,23 @@ internal sealed class AgentControlServer : IAsyncDisposable
             _window.Dispatcher.BeginInvoke(async () =>
             {
                 await Task.Delay(200);
-                _window.Close();
+                await _window.ExitAsync();
             });
             return Results.Accepted(value: new { accepted = true, message = "PC Space Map is closing." });
         });
 
         _app = app;
-        await app.StartAsync(cancellationToken);
-
-        var server = app.Services.GetRequiredService<IServer>();
-        var address = server.Features.Get<IServerAddressesFeature>()?.Addresses.SingleOrDefault()
-            ?? throw new InvalidOperationException("The local control address was not assigned.");
-        BaseUrl = address.TrimEnd('/');
-        await WriteSessionFileAsync(cancellationToken);
+        try
+        {
+            await app.StartAsync(cancellationToken);
+            var server = app.Services.GetRequiredService<IServer>();
+            var address = server.Features.Get<IServerAddressesFeature>()?.Addresses.SingleOrDefault();
+            if (!Uri.TryCreate(address, UriKind.Absolute, out var uri) || uri.Host != "127.0.0.1")
+                throw new InvalidOperationException("The local control address was not assigned.");
+            BaseUrl = address.TrimEnd('/');
+            await WriteSessionFileAsync(cancellationToken);
+        }
+        catch { await DisposeAsync(); throw; }
     }
 
     public async ValueTask DisposeAsync()
@@ -172,7 +193,9 @@ internal sealed class AgentControlServer : IAsyncDisposable
     {
         try
         {
-            if (File.Exists(SessionFilePath)) File.Delete(SessionFilePath);
+            using var session = JsonDocument.Parse(File.ReadAllText(SessionFilePath));
+            if (session.RootElement.TryGetProperty("processId", out var owner) && owner.GetInt32() == Environment.ProcessId)
+                File.Delete(SessionFilePath);
         }
         catch
         {
@@ -203,7 +226,7 @@ internal sealed class AgentControlServer : IAsyncDisposable
         var session = new
         {
             app = "PC Space Map",
-            version = "0.3.0",
+            version = App.AppVersion,
             baseUrl = BaseUrl,
             token = _token,
             processId = Environment.ProcessId,

@@ -2,8 +2,15 @@
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:controls="clr-namespace:PcSpaceMap.Controls"
+             PreviewKeyDown="Workspace_PreviewKeyDown"
              Background="{StaticResource AppBackground}"
              Foreground="{StaticResource PrimaryText}">
+    <UserControl.Resources>
+        <Style x:Key="FullPathCell" TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
+            <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
+            <Setter Property="ToolTip" Value="{Binding Text, RelativeSource={RelativeSource Self}}"/>
+        </Style>
+    </UserControl.Resources>
     <Grid Margin="6" Background="{StaticResource AppBackground}">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
@@ -22,7 +29,23 @@
                     <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="Auto"/>
                 </Grid.ColumnDefinitions>
-                <ComboBox x:Name="RootPathBox" IsEditable="False" IsTextSearchEnabled="False" VerticalContentAlignment="Center" MinWidth="420" Margin="3"/>
+                <Grid>
+                    <ComboBox x:Name="RootPathBox" IsEditable="False" IsTextSearchEnabled="False" VerticalContentAlignment="Center"
+                              AutomationProperties.Name="Drive or folder to scan" SelectionChanged="RootPathBox_SelectionChanged" Margin="3"/>
+                    <TextBlock Text="Choose a drive" Foreground="{StaticResource SecondaryText}" IsHitTestVisible="False"
+                               VerticalAlignment="Center" Margin="14,0,46,0">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
+                                <Setter Property="Visibility" Value="Collapsed"/>
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding Text, ElementName=RootPathBox}" Value="">
+                                        <Setter Property="Visibility" Value="Visible"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+                </Grid>
                 <Button Grid.Column="1" x:Name="BrowseButton" Content="Choose folder…" Click="BrowseButton_Click"/>
                 <Button Grid.Column="2" x:Name="ScanButton" Content="Scan now" Style="{StaticResource PrimaryButton}" Click="ScanButton_Click"/>
                 <Button Grid.Column="3" x:Name="RefreshFolderButton" Content="Update this folder" IsEnabled="False" Click="RefreshFolderButton_Click"/>
@@ -31,68 +54,183 @@
             </Grid>
         </Border>
 
-        <Grid Grid.Row="1" Margin="0,0,0,12">
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="*"/>
-                <ColumnDefinition Width="*"/>
-                <ColumnDefinition Width="*"/>
-                <ColumnDefinition Width="*"/>
-            </Grid.ColumnDefinitions>
-            <Border Grid.Column="0" Background="{StaticResource PanelBackground}" BorderBrush="{StaticResource PanelBorder}" BorderThickness="1" CornerRadius="8" Padding="14" Margin="0,0,8,0">
-                <StackPanel><TextBlock Text="SCANNED SIZE" Foreground="{StaticResource SecondaryText}" FontSize="10" FontWeight="Bold"/><TextBlock x:Name="TotalSizeText" Text="—" FontSize="23" FontWeight="SemiBold" Margin="0,4,0,0"/></StackPanel>
-            </Border>
-            <Border Grid.Column="1" Background="{StaticResource PanelBackground}" BorderBrush="{StaticResource PanelBorder}" BorderThickness="1" CornerRadius="8" Padding="14" Margin="0,0,8,0">
-                <StackPanel><TextBlock Text="FILES" Foreground="{StaticResource SecondaryText}" FontSize="10" FontWeight="Bold"/><TextBlock x:Name="FileCountText" Text="—" FontSize="23" FontWeight="SemiBold" Margin="0,4,0,0"/></StackPanel>
-            </Border>
-            <Border Grid.Column="2" Background="{StaticResource PanelBackground}" BorderBrush="{StaticResource PanelBorder}" BorderThickness="1" CornerRadius="8" Padding="14" Margin="0,0,8,0">
-                <StackPanel><TextBlock Text="FOLDERS" Foreground="{StaticResource SecondaryText}" FontSize="10" FontWeight="Bold"/><TextBlock x:Name="FolderCountText" Text="—" FontSize="23" FontWeight="SemiBold" Margin="0,4,0,0"/></StackPanel>
-            </Border>
-            <Border Grid.Column="3" Background="{StaticResource PanelBackground}" BorderBrush="#765A22" BorderThickness="1" CornerRadius="8" Padding="14">
-                <StackPanel><TextBlock Text="REVIEW CANDIDATES" Foreground="#FACC15" FontSize="10" FontWeight="Bold"/><TextBlock x:Name="CleanupSizeText" Text="—" FontSize="23" FontWeight="SemiBold" Margin="0,4,0,0"/></StackPanel>
-            </Border>
-        </Grid>
+        <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="4,-7,0,5">
+            <Label Target="{Binding ElementName=FilterNameBox}" Content="Name filter" VerticalAlignment="Center"
+                   Foreground="{StaticResource PrimaryText}" Padding="0,0,7,0"/>
+            <TextBox x:Name="FilterNameBox" Width="185" Padding="6,4" VerticalContentAlignment="Center"
+                     AutomationProperties.Name="Filter inventory lists by name" ToolTip="Part of a name or a wildcard such as *.zip"
+                     KeyDown="ListFilter_KeyDown"/>
+            <Button Content="Apply" Padding="8,4" Click="ApplyListFilter_Click"/>
+            <Button Content="Clear" Padding="8,4" Click="ClearListFilter_Click"/>
+            <TextBlock x:Name="ListNameFilterStatus" Foreground="{StaticResource SecondaryText}" VerticalAlignment="Center" Margin="6,0"/>
+        </StackPanel>
 
-        <TabControl Grid.Row="2" x:Name="MainTabs">
-            <TabItem Header="Space map">
+        <TabControl Grid.Row="2" x:Name="MainTabs" SelectionChanged="MainTabs_SelectionChanged">
+            <TabItem Header="Space map" PreviewKeyDown="SpaceMap_PreviewKeyDown">
                 <Grid Background="{StaticResource AppBackground}">
                     <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
-                    <Border Grid.Row="0" Background="#0D1727" BorderBrush="{StaticResource PanelBorder}" BorderThickness="0,0,0,1" Padding="8,5">
-                        <StackPanel x:Name="BreadcrumbPanel" Orientation="Horizontal"/>
+                    <Border Grid.Row="0" Background="#0D1727" BorderBrush="{StaticResource PanelBorder}" BorderThickness="0,0,0,1" Padding="6,3">
+                        <controls:ToolbarWrapPanel x:Name="MapToolbar">
+                            <controls:ToolbarWrapPanel.Resources>
+                                <Style TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+                                    <Setter Property="Padding" Value="7,5"/>
+                                    <Setter Property="Margin" Value="2"/>
+                                </Style>
+                                <Style TargetType="TextBox" BasedOn="{StaticResource {x:Type TextBox}}">
+                                    <Setter Property="Padding" Value="5,4"/>
+                                </Style>
+                                <Style TargetType="ComboBox" BasedOn="{StaticResource {x:Type ComboBox}}">
+                                    <Setter Property="MinHeight" Value="30"/>
+                                    <Setter Property="Padding" Value="6,4"/>
+                                    <Setter Property="Margin" Value="2"/>
+                                </Style>
+                            </controls:ToolbarWrapPanel.Resources>
+                            <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,8,0">
+                                <Button x:Name="BackButton" Content="←" ToolTip="Back (Backspace)" Click="Back_Click" IsEnabled="False"/>
+                                <Button x:Name="ForwardButton" Content="→" ToolTip="Forward (Shift+Backspace)" Click="Forward_Click" IsEnabled="False"/>
+                                <ScrollViewer x:Name="BreadcrumbScroll" MaxWidth="360" Focusable="False"
+                                              HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled">
+                                    <StackPanel x:Name="BreadcrumbPanel" Orientation="Horizontal" VerticalAlignment="Center"/>
+                                </ScrollViewer>
+                            </StackPanel>
+                            <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,8,0">
+                                <Button x:Name="LessDetailButton" Content="−" ToolTip="Less detail (Ctrl+−)" Click="LessDetail_Click"/>
+                                <TextBlock x:Name="DetailText" Text="Detail 5" VerticalAlignment="Center" Margin="4,0"/>
+                                <Button x:Name="MoreDetailButton" Content="+" ToolTip="More detail (Ctrl++)" Click="MoreDetail_Click"/>
+                            </StackPanel>
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center">
+                                <TextBlock Text="Min. MiB" VerticalAlignment="Center" Margin="6,0,5,0"/>
+                                <TextBox x:Name="FilterSizeBox" Width="42" VerticalContentAlignment="Center"
+                                         AutomationProperties.Name="Minimum file size in MiB" KeyDown="FilterBox_KeyDown"/>
+                                <ComboBox x:Name="FilterAgeModeBox" Width="144" SelectedIndex="0" Margin="5,0"
+                                          AutomationProperties.Name="File modification age comparison">
+                                    <ComboBoxItem Content="Modified within"/>
+                                    <ComboBoxItem Content="Older than"/>
+                                </ComboBox>
+                                <TextBox x:Name="FilterAgeBox" Width="36" VerticalContentAlignment="Center"
+                                         AutomationProperties.Name="Days since modification"
+                                         ToolTip="Enter the number of days. Modified within 3 days shows files last modified in the past 72 hours."
+                                         KeyDown="FilterBox_KeyDown"/>
+                                <TextBlock Text="days" VerticalAlignment="Center" Margin="5,0"/>
+                            </StackPanel>
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center" Margin="0,0,6,0">
+                                <Button Content="Apply" ToolTip="Apply size and age filters" Click="ApplyFilter_Click"/>
+                                <Button Content="Clear" ToolTip="Clear size and age filters" Click="ClearFilter_Click"/>
+                                <Button x:Name="FilterResultsButton" Content="View matches" Click="FilterResults_Click" IsEnabled="False"/>
+                                <TextBlock x:Name="FilterStatusText" Foreground="{StaticResource SecondaryText}" VerticalAlignment="Center" Margin="4,0"
+                                           ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}"/>
+                            </StackPanel>
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+                                <CheckBox x:Name="FreeSpaceBox" Content="Free space" VerticalAlignment="Center" Margin="0,0,8,0" Click="FreeSpace_Click"/>
+                                <CheckBox x:Name="WatchBox" Content="Live" AutomationProperties.Name="Live updates" ToolTip="Live updates"
+                                          VerticalAlignment="Center" Margin="0,0,8,0" Click="Watch_Click"/>
+                                <TextBlock x:Name="BackendLabel" Text="Standalone" Foreground="{StaticResource SecondaryText}"
+                                           VerticalAlignment="Center" Margin="0,0,8,0" MaxWidth="135" TextTrimming="CharacterEllipsis"
+                                           ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}"/>
+                                <ComboBox x:Name="ScanModeBox" Width="152" SelectedIndex="0" SelectionChanged="ScanOptions_Changed" ToolTip="Scan method">
+                                    <ComboBoxItem Content="Automatic (NTFS)"/>
+                                    <ComboBoxItem Content="Folder scan"/>
+                                </ComboBox>
+                                <ComboBox x:Name="WorkersBox" Width="90" SelectionChanged="ScanOptions_Changed" ToolTip="Auto measures a bounded metadata sample and remembers a reader count for each drive. Choose a number to override it.">
+                                    <ComboBoxItem Content="Auto"/>
+                                    <ComboBoxItem Content="1"/><ComboBoxItem Content="2"/><ComboBoxItem Content="4"/><ComboBoxItem Content="8"/><ComboBoxItem Content="16"/>
+                                </ComboBox>
+                                <Button x:Name="SavedButton" Content="Open saved" Click="SavedButton_Click"/>
+                                <Button x:Name="UpdateChangesButton" Content="Update changes" Click="UpdateChangesButton_Click" IsEnabled="False"/>
+                            </StackPanel>
+                        </controls:ToolbarWrapPanel>
                     </Border>
                     <Grid Grid.Row="1">
                         <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="300"/></Grid.ColumnDefinitions>
                         <Border Margin="8" BorderBrush="{StaticResource PanelBorder}" BorderThickness="1" CornerRadius="7" ClipToBounds="True">
-                            <controls:TreemapControl x:Name="Treemap" NodeSelected="Treemap_NodeSelected" ZoomRequested="Treemap_ZoomRequested"/>
+                            <controls:TreemapControl x:Name="Treemap" NodeSelected="Treemap_NodeSelected" ZoomRequested="Treemap_ZoomRequested"
+                                                    AutomationProperties.Name="Space map" AutomationProperties.HelpText="Use arrows to select a tile, Enter to zoom into a folder, and Shift+F10 for the Windows menu. Folder contents are also available as a list."
+                                                    ShellMenuRequested="Treemap_ShellMenuRequested"/>
                         </Border>
                         <Border Grid.Column="1" Background="{StaticResource PanelBackground}" BorderBrush="{StaticResource PanelBorder}" BorderThickness="1,0,0,0" Padding="18">
-                            <StackPanel>
-                                <TextBlock Text="SELECTED ITEM" Foreground="{StaticResource SecondaryText}" FontSize="10" FontWeight="Bold"/>
-                                <TextBlock x:Name="SelectedNameText" Text="Nothing selected" FontSize="19" FontWeight="SemiBold" TextWrapping="Wrap" Margin="0,8,0,0"/>
-                                <TextBlock x:Name="SelectedSizeText" Text="—" FontSize="28" FontWeight="Light" Foreground="{StaticResource Accent}" Margin="0,8,0,0"/>
-                                <TextBlock x:Name="SelectedContentsText" Text="Click a rectangle to inspect it. Double-click folders to zoom." Foreground="{StaticResource SecondaryText}" TextWrapping="Wrap" Margin="0,5,0,0"/>
-                                <Separator Background="{StaticResource PanelBorder}" Margin="0,18"/>
-                                <TextBlock Text="LOCATION" Foreground="{StaticResource SecondaryText}" FontSize="10" FontWeight="Bold"/>
-                                <TextBlock x:Name="SelectedPathText" Text="—" TextWrapping="Wrap" Margin="0,7,0,12"/>
-                                <Button x:Name="OpenSelectedButton" Content="Open in Explorer" IsEnabled="False" Click="OpenSelectedButton_Click" HorizontalAlignment="Stretch"/>
-                                <Button x:Name="ZoomSelectedButton" Content="Zoom into folder" IsEnabled="False" Click="ZoomSelectedButton_Click" HorizontalAlignment="Stretch"/>
-                                <Button x:Name="RefreshSelectedButton" Content="Update selected folder" IsEnabled="False" Click="RefreshFolderButton_Click" HorizontalAlignment="Stretch"/>
-                            </StackPanel>
+                            <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                                <StackPanel>
+                                    <TextBlock Text="SELECTED ITEM" Foreground="{StaticResource SecondaryText}" FontSize="10" FontWeight="Bold"/>
+                                    <TextBlock x:Name="SelectedNameText" Text="Nothing selected" FontSize="19" FontWeight="SemiBold" TextWrapping="Wrap" Margin="0,8,0,0"/>
+                                    <TextBlock x:Name="SelectedSizeText" Text="—" FontSize="28" FontWeight="Light" Foreground="{StaticResource Accent}" Margin="0,8,0,0"/>
+                                    <TextBlock x:Name="SelectedContentsText" Text="Click a rectangle to inspect it. Double-click folders to zoom." Foreground="{StaticResource SecondaryText}" TextWrapping="Wrap" Margin="0,5,0,0"/>
+                                    <Separator Background="{StaticResource PanelBorder}" Margin="0,18"/>
+                                    <TextBlock Text="LOCATION" Foreground="{StaticResource SecondaryText}" FontSize="10" FontWeight="Bold"/>
+                                    <TextBlock x:Name="SelectedPathText" Text="—" TextWrapping="Wrap" Margin="0,7,0,12"/>
+                                    <Button x:Name="OpenSelectedButton" Content="Open in Explorer" IsEnabled="False" Click="OpenSelectedButton_Click" HorizontalAlignment="Stretch"/>
+                                    <Button x:Name="ZoomSelectedButton" Content="Zoom into folder" IsEnabled="False" Click="ZoomSelectedButton_Click" HorizontalAlignment="Stretch"/>
+                                    <Button x:Name="RefreshSelectedButton" Content="Update selected folder" IsEnabled="False" Click="RefreshFolderButton_Click" HorizontalAlignment="Stretch"/>
+                                </StackPanel>
+                            </ScrollViewer>
                         </Border>
                     </Grid>
                 </Grid>
             </TabItem>
 
+            <TabItem x:Name="SearchTab" Header="Search">
+                <Grid Margin="8">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+                    <DockPanel LastChildFill="True">
+                        <Label Target="{Binding ElementName=SearchNameBox}" Content="File or folder name" Foreground="{StaticResource PrimaryText}"
+                               VerticalAlignment="Center" Padding="0,0,8,0"/>
+                        <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Margin="5,0,0,0">
+                            <Button Content="Search" Style="{StaticResource PrimaryButton}" Click="Search_Click"/>
+                            <Button Content="Filter other lists" Click="UseSearchFilter_Click"/>
+                        </StackPanel>
+                        <TextBox x:Name="SearchNameBox" VerticalContentAlignment="Center" AutomationProperties.Name="Search file or folder names"
+                                 ToolTip="Search the entire inventory in this tab. Use a partial name or a wildcard such as *.zip."
+                                 KeyDown="SearchName_KeyDown"/>
+                    </DockPanel>
+                    <TextBlock Grid.Row="1" x:Name="SearchStatusText" Foreground="{StaticResource SecondaryText}"
+                               Margin="4,8,4,8" TextWrapping="Wrap" Text="Search files and folders in this tab’s inventory."/>
+                    <DataGrid Grid.Row="2" x:Name="SearchResultsGrid" AutoGenerateColumns="False"
+                              MouseDoubleClick="InventoryGrid_MouseDoubleClick" PreviewKeyDown="InventoryGrid_PreviewKeyDown">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="Name" Binding="{Binding Name}" Width="2*"/>
+                            <DataGridTextColumn Header="Type" Binding="{Binding TypeText}" Width="90"/>
+                            <DataGridTextColumn Header="Size" Binding="{Binding SizeText}" Width="110" SortMemberPath="Size"/>
+                            <DataGridTextColumn Header="Modified" Binding="{Binding ModifiedText}" Width="135" SortMemberPath="LastWriteUtc"/>
+                            <DataGridTextColumn Header="Full path" Binding="{Binding Path}" Width="4*" ElementStyle="{StaticResource FullPathCell}"/>
+                        </DataGrid.Columns>
+                    </DataGrid>
+                    <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right">
+                        <Button x:Name="SearchPreviousButton" Content="Previous" Click="SearchPage_Click" IsEnabled="False"/>
+                        <Button x:Name="SearchNextButton" Content="Next" Click="SearchPage_Click" IsEnabled="False"/>
+                    </StackPanel>
+                </Grid>
+            </TabItem>
+
+            <TabItem Header="Folder contents">
+                <Grid Margin="8">
+                    <Grid.RowDefinitions><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                    <DataGrid x:Name="ContentsGrid" AutoGenerateColumns="False" MouseDoubleClick="InventoryGrid_MouseDoubleClick" PreviewKeyDown="InventoryGrid_PreviewKeyDown">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="Name" Binding="{Binding Name}" Width="2*"/>
+                            <DataGridTextColumn Header="Size" Binding="{Binding SizeText}" Width="120"/>
+                            <DataGridTextColumn Header="Allocated" Binding="{Binding AllocatedText}" Width="120"/>
+                            <DataGridTextColumn Header="Path" Binding="{Binding Path}" Width="3*" ElementStyle="{StaticResource FullPathCell}"/>
+                        </DataGrid.Columns>
+                    </DataGrid>
+                    <StackPanel Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Right">
+                        <Button x:Name="ContentsPreviousButton" Content="Previous" Click="ContentsPage_Click" IsEnabled="False"/>
+                        <TextBlock x:Name="ContentsPageText" VerticalAlignment="Center" Margin="8"/>
+                        <Button x:Name="ContentsNextButton" Content="Next" Click="ContentsPage_Click" IsEnabled="False"/>
+                    </StackPanel>
+                </Grid>
+            </TabItem>
             <TabItem Header="Largest files">
                 <Grid Background="{StaticResource AppBackground}" Margin="8">
                     <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
-                    <TextBlock Text="The 5,000 largest files found. Double-click a row to reveal it in Explorer." Foreground="{StaticResource SecondaryText}" Margin="4,5,4,10"/>
-                    <DataGrid Grid.Row="1" x:Name="LargestFilesGrid" AutoGenerateColumns="False" MouseDoubleClick="LargestFilesGrid_MouseDoubleClick">
+                    <TextBlock x:Name="LargestFilesText" Text="The 5,000 largest files found. Double-click a row to reveal it in Explorer." Foreground="{StaticResource SecondaryText}" Margin="4,5,4,10"/>
+                    <DataGrid Grid.Row="1" x:Name="LargestFilesGrid" AutoGenerateColumns="False" MouseDoubleClick="InventoryGrid_MouseDoubleClick" PreviewKeyDown="InventoryGrid_PreviewKeyDown">
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="Name" Binding="{Binding Name}" Width="2*"/>
                             <DataGridTextColumn Header="Size" Binding="{Binding SizeText}" Width="110" SortMemberPath="Size"/>
                             <DataGridTextColumn Header="Type" Binding="{Binding TypeText}" Width="90"/>
                             <DataGridTextColumn Header="Modified" Binding="{Binding ModifiedText}" Width="145" SortMemberPath="LastWriteUtc"/>
-                            <DataGridTextColumn Header="Location" Binding="{Binding Path}" Width="4*"/>
+                            <DataGridTextColumn Header="Location" Binding="{Binding Path}" Width="4*" ElementStyle="{StaticResource FullPathCell}"/>
                         </DataGrid.Columns>
                     </DataGrid>
                 </Grid>
@@ -101,15 +239,15 @@
             <TabItem Header="Cleanup review">
                 <Grid Background="{StaticResource AppBackground}" Margin="8">
                     <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-                    <TextBlock Text="Suggestions are grouped and advisory. Double-click to inspect the largest example; clean through the owning app or Windows when possible." Foreground="{StaticResource SecondaryText}" Margin="4,5,4,10" TextWrapping="Wrap"/>
-                    <DataGrid Grid.Row="1" x:Name="CleanupGrid" AutoGenerateColumns="False" MouseDoubleClick="CleanupGrid_MouseDoubleClick">
+                    <TextBlock x:Name="CleanupDescription" Text="Suggestions are grouped and advisory. Double-click to inspect the largest example; clean through the owning app or Windows when possible." Foreground="{StaticResource SecondaryText}" Margin="4,5,4,10" TextWrapping="Wrap"/>
+                    <DataGrid Grid.Row="1" x:Name="CleanupGrid" AutoGenerateColumns="False" MouseDoubleClick="InventoryGrid_MouseDoubleClick" PreviewKeyDown="InventoryGrid_PreviewKeyDown">
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="Category" Binding="{Binding Category}" Width="190"/>
                             <DataGridTextColumn Header="Confidence" Binding="{Binding ConfidenceText}" Width="110"/>
                             <DataGridTextColumn Header="Potential" Binding="{Binding SizeText}" Width="110" SortMemberPath="Size"/>
                             <DataGridTextColumn Header="Files" Binding="{Binding FileCountText}" Width="85" SortMemberPath="FileCount"/>
                             <DataGridTextColumn Header="Why it was flagged" Binding="{Binding Reason}" Width="3*"/>
-                            <DataGridTextColumn Header="Largest example" Binding="{Binding SamplePath}" Width="3*"/>
+                            <DataGridTextColumn Header="Largest example" Binding="{Binding SamplePath}" Width="3*" ElementStyle="{StaticResource FullPathCell}"/>
                         </DataGrid.Columns>
                     </DataGrid>
                     <Border Grid.Row="2" Background="#2A2010" BorderBrush="#765A22" BorderThickness="1" CornerRadius="6" Padding="11" Margin="0,10,0,0">
@@ -118,13 +256,31 @@
                 </Grid>
             </TabItem>
 
+            <TabItem Header="Changes">
+                <Grid Margin="8">
+                    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+                    <TextBlock x:Name="ChangesSummaryText" Foreground="{StaticResource SecondaryText}" Margin="4,5,4,10" TextWrapping="Wrap"/>
+                    <DataGrid Grid.Row="1" x:Name="ChangesGrid" AutoGenerateColumns="False">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="Change" Binding="{Binding Kind}" Width="100"/>
+                            <DataGridTextColumn Header="Size change" Binding="{Binding DeltaText}" SortMemberPath="DeltaBytes" Width="120"/>
+                            <DataGridTextColumn Header="Before (bytes)" Binding="{Binding BeforeBytes}" Width="140"/>
+                            <DataGridTextColumn Header="After (bytes)" Binding="{Binding AfterBytes}" Width="140"/>
+                            <DataGridTextColumn Header="Path" Binding="{Binding Path}" Width="*" ElementStyle="{StaticResource FullPathCell}"/>
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </Grid>
+            </TabItem>
             <TabItem Header="Scan notes">
                 <Grid Background="{StaticResource AppBackground}" Margin="8">
                     <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
-                    <TextBlock x:Name="IssueSummaryText" Text="Locked or inaccessible paths will appear here." Foreground="{StaticResource SecondaryText}" Margin="4,5,4,10"/>
+                    <StackPanel>
+                        <TextBlock x:Name="MethodText" Foreground="{StaticResource SecondaryText}" Margin="4,5"/>
+                        <TextBlock x:Name="IssueSummaryText" Text="Locked or inaccessible paths will appear here." Foreground="{StaticResource SecondaryText}" Margin="4,5,4,10"/>
+                    </StackPanel>
                     <DataGrid Grid.Row="1" x:Name="IssuesGrid" AutoGenerateColumns="False">
                         <DataGrid.Columns>
-                            <DataGridTextColumn Header="Path" Binding="{Binding Path}" Width="3*"/>
+                            <DataGridTextColumn Header="Path" Binding="{Binding Path}" Width="3*" ElementStyle="{StaticResource FullPathCell}"/>
                             <DataGridTextColumn Header="What happened" Binding="{Binding Message}" Width="2*"/>
                         </DataGrid.Columns>
                     </DataGrid>
@@ -132,11 +288,84 @@
             </TabItem>
         </TabControl>
 
-        <Grid Grid.Row="3" Margin="2,10,2,0">
-            <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-            <ProgressBar x:Name="ScanProgressBar" Width="150" Height="5" IsIndeterminate="True" Visibility="Collapsed" VerticalAlignment="Center"/>
-            <TextBlock Grid.Column="1" x:Name="StatusText" Text="Ready to scan." Foreground="{StaticResource SecondaryText}" Margin="10,0" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
-            <TextBlock Grid.Column="2" x:Name="ElapsedText" Foreground="{StaticResource SecondaryText}" VerticalAlignment="Center"/>
-        </Grid>
+        <Border Grid.Row="3" Margin="0,4,0,0" Padding="9,4" CornerRadius="5"
+                Background="{StaticResource PanelBackground}" BorderBrush="{StaticResource PanelBorder}" BorderThickness="1">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <StackPanel x:Name="ScanProgressPanel" Orientation="Horizontal" Visibility="Collapsed"
+                            VerticalAlignment="Center" Margin="0,0,9,0">
+                    <ProgressBar x:Name="ScanProgressBar" Width="48" Height="4" IsIndeterminate="True" VerticalAlignment="Center"
+                                 Foreground="{StaticResource Accent}" Background="{StaticResource InputBackground}"/>
+                    <TextBlock x:Name="ScanPercentText" Foreground="{StaticResource Accent}" Margin="5,0,0,0"/>
+                </StackPanel>
+                <TextBlock Grid.Column="1" x:Name="BatchText" Visibility="Collapsed" Foreground="{StaticResource Accent}" Margin="0,0,9,0"/>
+                <TextBlock Grid.Column="2" x:Name="StatusText" Text="Ready to scan." Foreground="{StaticResource SecondaryText}"
+                           TextTrimming="CharacterEllipsis" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}" />
+                <TextBlock Grid.Column="3" Margin="12,0,0,0" Foreground="{StaticResource SecondaryText}">
+                    <Run Text="Scanned&#160;" /><Run x:Name="TotalSizeText" Text="—" FontWeight="SemiBold" Foreground="{StaticResource PrimaryText}" />
+                    <Run Text="&#160;&#160;·&#160;&#160;Files&#160;" /><Run x:Name="FileCountText" Text="—" FontWeight="SemiBold" Foreground="{StaticResource PrimaryText}" />
+                    <Run Text="&#160;&#160;·&#160;&#160;Folders&#160;" /><Run x:Name="FolderCountText" Text="—" FontWeight="SemiBold" Foreground="{StaticResource PrimaryText}" />
+                    <Run Text="&#160;&#160;·&#160;&#160;" /><Run Text="Review candidates&#160;" Foreground="#FACC15" />
+                    <Run x:Name="CleanupSizeText" Text="—" FontWeight="SemiBold" Foreground="{StaticResource PrimaryText}" />
+                </TextBlock>
+                <TextBlock Grid.Column="4" x:Name="ElapsedText" Margin="12,0,0,0" Foreground="{StaticResource SecondaryText}" />
+                <DockPanel Grid.Row="1" Grid.ColumnSpan="5" x:Name="ServiceFooterPanel" Visibility="Collapsed" Margin="0,4,0,0">
+                    <TextBlock x:Name="ServiceFooterText" DockPanel.Dock="Left" VerticalAlignment="Center" Margin="0,0,9,0"
+                               Foreground="{StaticResource PrimaryText}" FontWeight="SemiBold"/>
+                    <ItemsControl x:Name="ServiceDriveChips">
+                        <ItemsControl.ItemsPanel>
+                            <ItemsPanelTemplate><WrapPanel/></ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Border Background="{StaticResource InputBackground}" BorderBrush="{StaticResource PanelBorder}"
+                                        BorderThickness="1" CornerRadius="4" Margin="0,1,4,1" Padding="6,1"
+                                        ToolTip="{Binding Detail}" AutomationProperties.Name="{Binding Detail}">
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Text="{Binding Drive}" FontWeight="SemiBold" Margin="0,0,4,0"/>
+                                        <TextBlock Text="{Binding Caption}">
+                                            <TextBlock.Style>
+                                                <Style TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
+                                                    <Setter Property="Foreground" Value="{StaticResource SecondaryText}"/>
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding Tone}" Value="Ready"><Setter Property="Foreground" Value="#86EFAC"/></DataTrigger>
+                                                        <DataTrigger Binding="{Binding Tone}" Value="Active"><Setter Property="Foreground" Value="#67E8F9"/></DataTrigger>
+                                                        <DataTrigger Binding="{Binding Tone}" Value="Queued"><Setter Property="Foreground" Value="#FDE68A"/></DataTrigger>
+                                                        <DataTrigger Binding="{Binding Tone}" Value="Problem"><Setter Property="Foreground" Value="#FCA5A5"/></DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </TextBlock.Style>
+                                        </TextBlock>
+                                        <ProgressBar Width="25" Height="3" Margin="5,0,0,0" VerticalAlignment="Center"
+                                                     Value="{Binding Percent, Mode=OneWay, TargetNullValue=0}"
+                                                     Foreground="{StaticResource Accent}" Background="{StaticResource PanelBorder}">
+                                            <ProgressBar.Style>
+                                                <Style TargetType="ProgressBar">
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding Percent}" Value="{x:Null}">
+                                                            <Setter Property="Visibility" Value="Collapsed"/>
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </ProgressBar.Style>
+                                        </ProgressBar>
+                                    </StackPanel>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </DockPanel>
+            </Grid>
+        </Border>
     </Grid>
 </UserControl>

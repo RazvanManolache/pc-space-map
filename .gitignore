@@ -11,3 +11,6 @@ reports/
 api-screenshot-test.png
 scan-test.json
 *.pdb
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm

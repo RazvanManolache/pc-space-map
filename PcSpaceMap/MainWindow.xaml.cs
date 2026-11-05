@@ -1,6 +1,7 @@
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using PcSpaceMap.Controls;
@@ -11,20 +12,44 @@ namespace PcSpaceMap;
 
 public partial class MainWindow : Window
 {
+    public static readonly RoutedUICommand NewTabCommand = new("New tab", nameof(NewTabCommand), typeof(MainWindow));
+    public static readonly RoutedUICommand ScanAllCommand = new("Scan all drives", nameof(ScanAllCommand), typeof(MainWindow));
+    public static readonly RoutedUICommand StopAllCommand = new("Stop all scans", nameof(StopAllCommand), typeof(MainWindow));
+    public static readonly RoutedUICommand CloseTabCommand = new("Close tab", nameof(CloseTabCommand), typeof(MainWindow));
+
     private AgentControlServer? _agentServer;
     private bool _isBatchScanning;
+    private bool _batchStopped;
+    private ScanWorkspaceControl? _batchCurrent;
+    private ServiceWindow? _serviceWindow;
+
+    private void ServiceButton_Click(object sender, RoutedEventArgs e) => OpenServiceWindow();
+
+    private void OpenServiceWindow()
+    {
+        if (_exitRequested) return;
+        if (_serviceWindow is { } open) { open.Activate(); return; }
+        _serviceWindow = new ServiceWindow { Owner = this };
+        try { _serviceWindow.ShowDialog(); }
+        finally { _serviceWindow = null; }
+    }
 
     public MainWindow()
     {
         InitializeComponent();
-        LoadDrives();
+        Title = $"PC Space Map {App.AppVersion}";
+        RefreshStartupChoice();
+        DesktopStartupBox.SelectionChanged += DesktopStartupBox_SelectionChanged;
         EnsureAtLeastOneTab();
         Closing += MainWindow_Closing;
+        Closed += MainWindow_Closed;
         Loaded += MainWindow_Loaded;
     }
 
     private async void MainWindow_Loaded(object sender, RoutedEventArgs e)
     {
+        StartServiceFooter();
+        if (_agentServer is not null) return;
         try
         {
             _agentServer = new AgentControlServer(this);
@@ -41,33 +66,35 @@ public partial class MainWindow : Window
 
     private void MainWindow_Closing(object? sender, System.ComponentModel.CancelEventArgs e)
     {
+        if (_allowClose) return;
+        if (!_exitRequested && _trayIcon is not null && _trayOptions.CloseToTray)
+        {
+            e.Cancel = true;
+            // WPF disallows changing Visibility until the Closing event returns.
+            _ = Dispatcher.BeginInvoke(HideToTray);
+        }
+        else if (_exitRequested || AnyWorkspaceScanning())
+        {
+            e.Cancel = true;
+            if (!_exitRequested) _ = Dispatcher.BeginInvoke(async () => await ExitAsync());
+        }
+    }
+
+    private void MainWindow_Closed(object? sender, EventArgs e)
+    {
+        StopServiceFooter();
+        DisposeTray();
+        foreach (var tab in DiskTabs.Items.OfType<TabItem>())
+            if (tab.Content is ScanWorkspaceControl workspace) workspace.CloseWorkspace();
         if (_agentServer is null) return;
 
         _agentServer.RemoveSessionFile();
         _agentServer = null;
     }
 
-    private void LoadDrives()
-    {
-        var drives = DriveInfo.GetDrives()
-            .Where(x => x.IsReady)
-            .Select(x => $"{x.RootDirectory.FullName}   {x.VolumeLabel}   ({SizeFormatter.Format(x.AvailableFreeSpace)} free)")
-            .ToList();
-        QuickPathBox.ItemsSource = drives;
-        QuickPathBox.Text = Path.GetPathRoot(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)) ?? "C:\\";
-        RefreshShellState();
-    }
-
     private void EnsureAtLeastOneTab()
     {
-        if (DiskTabs.Items.Count > 0) return;
-
-        var defaultRoot = ExtractPath(QuickPathBox.Text);
-        var workspace = CreateWorkspace(defaultRoot);
-        var tab = CreateTabItem(workspace);
-        DiskTabs.Items.Add(tab);
-        DiskTabs.SelectedItem = tab;
-        UpdateShellStatus();
+        if (DiskTabs.Items.Count == 0) AddWorkspaceTab("", activate: true);
     }
 
     private IEnumerable<ScanWorkspaceControl> GetWorkspaces() =>
@@ -83,13 +110,15 @@ public partial class MainWindow : Window
     {
         var workspace = new ScanWorkspaceControl();
         workspace.SetRootPath(path);
+        UpdateWorkspaceServiceFooter(workspace);
         workspace.TitleChanged += Workspace_TitleChanged;
+        workspace.StopRequested += (_, _) => StopBatch();
         return workspace;
     }
 
     private TabItem CreateTabItem(ScanWorkspaceControl workspace)
     {
-        var tab = new TabItem { Content = workspace };
+        var tab = new TabItem { Content = workspace, HeaderTemplate = (DataTemplate)FindResource("DiskTabHeader") };
         RefreshTabPresentation(tab, workspace);
         return tab;
     }
@@ -102,8 +131,7 @@ public partial class MainWindow : Window
         if (tab is not null)
             RefreshTabPresentation(tab, workspace);
 
-        RefreshShellState();
-        UpdateShellStatus();
+        CommandManager.InvalidateRequerySuggested();
     }
 
     private void RefreshTabPresentation(TabItem tab, ScanWorkspaceControl workspace)
@@ -115,9 +143,12 @@ public partial class MainWindow : Window
     private ScanWorkspaceControl EnsureWorkspaceTab(string path, bool activate)
     {
         var normalized = NormalizePath(path);
-        var existingTab = DiskTabs.Items.OfType<TabItem>()
+        var tabs = DiskTabs.Items.OfType<TabItem>().ToList();
+        var existingTab = tabs
             .FirstOrDefault(x => x.Content is ScanWorkspaceControl workspace &&
-                                 string.Equals(NormalizePath(workspace.ConfiguredPath), normalized, StringComparison.OrdinalIgnoreCase));
+                                 string.Equals(NormalizePath(workspace.EffectivePath), normalized, StringComparison.OrdinalIgnoreCase))
+            ?? tabs.FirstOrDefault(x => x.Content is ScanWorkspaceControl workspace &&
+                                        !workspace.IsScanning && string.IsNullOrWhiteSpace(workspace.EffectivePath));
         if (existingTab?.Content is ScanWorkspaceControl existingWorkspace)
         {
             existingWorkspace.SetRootPath(path);
@@ -126,6 +157,11 @@ public partial class MainWindow : Window
             return existingWorkspace;
         }
 
+        return AddWorkspaceTab(path, activate);
+    }
+
+    private ScanWorkspaceControl AddWorkspaceTab(string path, bool activate)
+    {
         var workspace = CreateWorkspace(path);
         var tab = CreateTabItem(workspace);
         DiskTabs.Items.Add(tab);
@@ -133,138 +169,101 @@ public partial class MainWindow : Window
         return workspace;
     }
 
-    private void RefreshShellState()
+    private void TabCommand_CanExecute(object sender, CanExecuteRoutedEventArgs e)
     {
-        var anyScanning = AnyWorkspaceScanning();
-        QuickPathBox.IsEnabled = !_isBatchScanning && !anyScanning;
-        OpenAndScanButton.IsEnabled = !_isBatchScanning && !anyScanning;
-        ScanAllButton.IsEnabled = !_isBatchScanning && !anyScanning;
-        OpenTabButton.IsEnabled = !_isBatchScanning;
-        CloseTabButton.IsEnabled = !_isBatchScanning && CurrentWorkspace?.IsScanning != true;
+        e.CanExecute = DiskTabs is not null && !_isBatchScanning && !_exitRequested &&
+            (e.Command == ScanAllCommand ? !AnyWorkspaceScanning()
+                : e.Command != CloseTabCommand || CanCloseTab(e.Parameter as TabItem));
+        e.Handled = true;
     }
 
-    private void UpdateShellStatus()
+    private void NewTab_Executed(object sender, ExecutedRoutedEventArgs e) => AddWorkspaceTab("", activate: true);
+
+    private void StopAll_CanExecute(object sender, CanExecuteRoutedEventArgs e)
     {
-        if (_isBatchScanning) return;
-
-        var workspace = CurrentWorkspace;
-        if (workspace is null)
-        {
-            ShellStatusText.Text = "Open a tab for a disk or folder, then scan it.";
-            return;
-        }
-
-        var snapshot = workspace.GetSnapshot();
-        if (snapshot.IsScanning || snapshot.InventoryReady)
-        {
-            ShellStatusText.Text = snapshot.Status;
-            return;
-        }
-
-        ShellStatusText.Text = $"Tab ready: {workspace.TabToolTip}";
+        e.CanExecute = _isBatchScanning;
+        e.Handled = true;
     }
 
-    private async void OpenAndScanButton_Click(object sender, RoutedEventArgs e)
+    private void StopAll_Executed(object sender, ExecutedRoutedEventArgs e) => StopBatch();
+
+    private void StopBatch()
+    {
+        if (!_isBatchScanning || _batchStopped) return;
+        _batchStopped = true;
+        _batchCurrent?.RequestStop();
+    }
+
+    private ScanWorkspaceControl[] PrepareDriveTabs(IReadOnlyList<string> drives) =>
+        drives.Select(path => EnsureWorkspaceTab(path, activate: false)).ToArray();
+
+    private async void ScanAll_Executed(object sender, ExecutedRoutedEventArgs e)
+    {
+        var drives = DriveInfo.GetDrives().Where(drive => drive.IsReady)
+            .Select(drive => drive.RootDirectory.FullName).ToArray();
+        await ScanAllAsync(drives);
+    }
+
+    private async Task ScanAllAsync(IReadOnlyList<string> drives)
     {
         if (_isBatchScanning || AnyWorkspaceScanning()) return;
 
-        var requestedPath = ExtractPath(QuickPathBox.Text);
-        if (string.IsNullOrWhiteSpace(requestedPath) || !Directory.Exists(requestedPath))
-        {
-            MessageBox.Show(this, "Choose an existing drive or folder first.", "Folder not found", MessageBoxButton.OK, MessageBoxImage.Information);
-            return;
-        }
-
-        var workspace = EnsureWorkspaceTab(requestedPath, activate: true);
-        RefreshShellState();
-        await workspace.StartScanAsync(requestedPath);
-        RefreshShellState();
-        UpdateShellStatus();
-    }
-
-    private void OpenTabButton_Click(object sender, RoutedEventArgs e)
-    {
-        var requestedPath = ExtractPath(QuickPathBox.Text);
-        if (string.IsNullOrWhiteSpace(requestedPath) || !Directory.Exists(requestedPath))
-        {
-            MessageBox.Show(this, "Choose an existing drive or folder first.", "Folder not found", MessageBoxButton.OK, MessageBoxImage.Information);
-            return;
-        }
-
-        EnsureWorkspaceTab(requestedPath, activate: true);
-        RefreshShellState();
-        UpdateShellStatus();
-    }
-
-    private async void ScanAllButton_Click(object sender, RoutedEventArgs e)
-    {
-        if (_isBatchScanning || AnyWorkspaceScanning()) return;
-
-        var drives = DriveInfo.GetDrives()
-            .Where(x => x.IsReady)
-            .Select(x => x.RootDirectory.FullName)
-            .ToList();
         if (drives.Count == 0)
         {
-            ShellStatusText.Text = "No ready drives were found.";
+            CurrentWorkspace?.SetStatus("No ready drives were found.");
             return;
         }
 
         _isBatchScanning = true;
-        RefreshShellState();
+        _batchStopped = false;
+        CommandManager.InvalidateRequerySuggested();
         var completed = 0;
         try
         {
-            for (var index = 0; index < drives.Count; index++)
+            var queue = PrepareDriveTabs(drives);
+            DiskTabs.SelectedItem = DiskTabs.Items.OfType<TabItem>().First(tab => ReferenceEquals(tab.Content, queue[0]));
+            for (var index = 0; index < drives.Count && !_exitRequested && !_batchStopped; index++)
             {
                 var path = drives[index];
-                ShellStatusText.Text = $"Scanning {path} ({index + 1}/{drives.Count})";
-                var workspace = EnsureWorkspaceTab(path, activate: true);
-                if (await workspace.StartScanAsync(path))
+                foreach (var tab in GetWorkspaces())
+                    tab.SetBatchCaption($"{path} · {index + 1}/{drives.Count}");
+                _batchCurrent = queue[index];
+                if (await _batchCurrent.StartScanAsync(path))
                     completed++;
             }
 
-            ShellStatusText.Text = $"Finished scanning {completed} of {drives.Count} drives.";
+            if (!_exitRequested) CurrentWorkspace?.SetStatus(_batchStopped
+                ? $"Batch stopped. Scanned {completed} of {drives.Count} drives."
+                : $"Finished scanning {completed} of {drives.Count} drives.");
         }
         finally
         {
             _isBatchScanning = false;
-            RefreshShellState();
-            UpdateShellStatus();
+            _batchCurrent = null;
+            foreach (var tab in GetWorkspaces())
+                tab.SetBatchCaption(null);
+            CommandManager.InvalidateRequerySuggested();
         }
     }
 
-    private void CloseTabButton_Click(object sender, RoutedEventArgs e)
+    private bool CanCloseTab(TabItem? tab) => !_isBatchScanning && !_exitRequested &&
+        tab?.Content is ScanWorkspaceControl { IsScanning: false } && DiskTabs.Items.Contains(tab);
+
+    private void CloseTab_Executed(object sender, ExecutedRoutedEventArgs e)
     {
-        if (CurrentWorkspace?.IsScanning == true)
-        {
-            MessageBox.Show(this, "Stop the active scan before closing this tab.", "Scan running", MessageBoxButton.OK, MessageBoxImage.Information);
-            return;
-        }
+        if (e.Parameter is not TabItem tab || tab.Content is not ScanWorkspaceControl workspace || !CanCloseTab(tab)) return;
+        var confirmation = new CloseTabDialog(workspace.TabTitle, workspace.EffectivePath) { Owner = this };
+        if (confirmation.ShowDialog() != true || !CanCloseTab(tab)) return;
 
-        if (DiskTabs.SelectedItem is not TabItem selectedTab) return;
-
-        if (selectedTab.Content is ScanWorkspaceControl workspace)
-            workspace.TitleChanged -= Workspace_TitleChanged;
-
-        DiskTabs.Items.Remove(selectedTab);
-        EnsureAtLeastOneTab();
-        RefreshShellState();
-        UpdateShellStatus();
-    }
-
-    private void DiskTabs_SelectionChanged(object sender, SelectionChangedEventArgs e)
-    {
-        RefreshShellState();
-        UpdateShellStatus();
-    }
-
-    private static string ExtractPath(string value)
-    {
-        var trimmed = value.Trim();
-        if (trimmed.Length > 3 && char.IsLetter(trimmed[0]) && trimmed[1] == ':' && trimmed[2] == '\\' && char.IsWhiteSpace(trimmed[3]))
-            return trimmed[..3];
-        return trimmed;
+        var index = DiskTabs.Items.IndexOf(tab);
+        var selected = DiskTabs.SelectedItem;
+        workspace.CloseWorkspace();
+        workspace.TitleChanged -= Workspace_TitleChanged;
+        DiskTabs.Items.Remove(tab);
+        if (DiskTabs.Items.Count == 0) EnsureAtLeastOneTab();
+        else if (ReferenceEquals(tab, selected)) DiskTabs.SelectedIndex = Math.Min(index, DiskTabs.Items.Count - 1);
+        else DiskTabs.SelectedItem = selected;
+        CommandManager.InvalidateRequerySuggested();
     }
 
     private static string NormalizePath(string value)
@@ -282,9 +281,9 @@ public partial class MainWindow : Window
 
     internal AgentScanResponse BeginAgentScan(string path)
     {
-        if (_isBatchScanning || AnyWorkspaceScanning())
+        if (_exitRequested || _isBatchScanning || AnyWorkspaceScanning())
             return new AgentScanResponse(false, "A scan is already running.");
-        if (string.IsNullOrWhiteSpace(path) || !Directory.Exists(path))
+        if (string.IsNullOrWhiteSpace(path) || (!ServicePreferences.IsInstalled() && !Directory.Exists(path)))
             return new AgentScanResponse(false, "The requested folder does not exist.");
 
         var workspace = EnsureWorkspaceTab(path, activate: true);
@@ -298,9 +297,9 @@ public partial class MainWindow : Window
         return new
         {
             app = "PC Space Map",
-            version = "0.3.0",
+            version = App.AppVersion,
             isScanning = _isBatchScanning || AnyWorkspaceScanning(),
-            status = snapshot?.Status ?? ShellStatusText.Text,
+            status = snapshot?.Status ?? "Open a tab for a disk or folder, then scan it.",
             scanRoot = snapshot?.ScanRoot,
             scannedSize = snapshot?.ScannedSize ?? 0,
             scannedSizeText = snapshot?.ScannedSizeText,
@@ -313,6 +312,8 @@ public partial class MainWindow : Window
             selectedTab = snapshot?.SelectedTab,
             selectedDiskTab = (DiskTabs.SelectedItem as TabItem)?.Header?.ToString(),
             openTabs = DiskTabs.Items.OfType<TabItem>().Select(x => x.Header?.ToString()).ToArray(),
+            serviceStatus = _serviceFooter.Text,
+            serviceDrives = _serviceFooter.Drives,
             inventoryReady = snapshot?.InventoryReady ?? false,
             readOnly = true
         };
@@ -345,6 +346,12 @@ public partial class MainWindow : Window
     internal object BuildAgentSuggestions() =>
         CurrentWorkspace?.BuildAgentSuggestions() ?? new { inventoryReady = false, readOnly = true, totalPotential = 0, suggestions = Array.Empty<object>() };
 
+    internal object BuildAgentChanges() => CurrentWorkspace?.BuildAgentChanges() ?? new { inventoryReady = false };
+    internal object BuildAgentChildren(string? path, int offset, int limit) => CurrentWorkspace?.BuildAgentChildren(path, offset, limit) ?? new { found = false };
+    internal bool BeginAgentUpdate() => !_isBatchScanning && !AnyWorkspaceScanning() && CurrentWorkspace?.BeginUpdateChanges() == true;
+    internal bool BeginAgentUpdateFolder(string path) => !_isBatchScanning && !AnyWorkspaceScanning() && CurrentWorkspace?.BeginUpdateFolder(path) == true;
+    internal bool BeginAgentOpenSaved(string path) => !_isBatchScanning && !AnyWorkspaceScanning() && EnsureWorkspaceTab(path, activate: true).BeginOpenSaved(path);
+
     internal object BuildAgentIssues() =>
         CurrentWorkspace?.BuildAgentIssues() ?? new { inventoryReady = false, skippedReparsePoints = 0, issues = Array.Empty<object>() };
 
@@ -372,8 +379,10 @@ public partial class MainWindow : Window
     {
         AppSurface.UpdateLayout();
         var dpi = VisualTreeHelper.GetDpi(AppSurface);
-        var width = Math.Max(1, (int)Math.Ceiling(AppSurface.ActualWidth * dpi.DpiScaleX));
-        var height = Math.Max(1, (int)Math.Ceiling(AppSurface.ActualHeight * dpi.DpiScaleY));
+        // Rendering includes the root grid's offset from its window margin.
+        var offset = VisualTreeHelper.GetOffset(AppSurface);
+        var width = Math.Max(1, (int)Math.Ceiling((AppSurface.ActualWidth + Math.Max(0, offset.X)) * dpi.DpiScaleX));
+        var height = Math.Max(1, (int)Math.Ceiling((AppSurface.ActualHeight + Math.Max(0, offset.Y)) * dpi.DpiScaleY));
         var bitmap = new RenderTargetBitmap(width, height, dpi.PixelsPerInchX, dpi.PixelsPerInchY, PixelFormats.Pbgra32);
         bitmap.Render(AppSurface);
         var encoder = new PngBitmapEncoder();

@@ -1,0 +1,44 @@
+<Window x:Class="PcSpaceMap.ServiceWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Windows Service" Width="555" SizeToContent="Height" ResizeMode="NoResize" WindowStartupLocation="CenterOwner"
+        Style="{StaticResource {x:Type Window}}">
+    <StackPanel Margin="22">
+        <TextBlock Text="Windows Service" FontSize="24" FontWeight="SemiBold"/>
+        <TextBlock x:Name="ServiceStatusText" Margin="0,8,0,14" Foreground="{StaticResource SecondaryText}" TextWrapping="Wrap"/>
+        <TextBlock Text="The desktop app uses the service for indexing whenever it is installed."
+                   Margin="0,0,0,12" TextWrapping="Wrap"/>
+        <TextBlock Text="Drives the LocalSystem service may index" FontWeight="SemiBold" Margin="0,0,0,7"/>
+        <TextBlock Text="The selected Windows user can read indexed file names and metadata for these drives." TextWrapping="Wrap" Foreground="{StaticResource SecondaryText}"/>
+        <ScrollViewer MaxHeight="180" VerticalScrollBarVisibility="Auto" Margin="0,7">
+            <ItemsControl x:Name="DriveChoices">
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <CheckBox Content="{Binding Label}" IsChecked="{Binding Selected, Mode=TwoWay}" Margin="0,4"/>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+        </ScrollViewer>
+        <CheckBox x:Name="LiveBox" Content="Keep the index updated in the background" IsChecked="True" Margin="0,4"/>
+        <CheckBox x:Name="AutoStartBox" Content="Start the indexing service with Windows" IsChecked="True" Margin="0,4"/>
+        <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+            <Label Target="{Binding ElementName=ConcurrentScansBox}" Content="Simultaneous scans" Foreground="{StaticResource PrimaryText}"
+                   VerticalAlignment="Center" Padding="0" Margin="0,0,9,0"/>
+            <ComboBox x:Name="ConcurrentScansBox" Width="76" Padding="8,4" MinHeight="28"
+                      AutomationProperties.Name="Simultaneous scans"/>
+        </StackPanel>
+        <TextBlock x:Name="ConcurrencyHelpText" Foreground="{StaticResource SecondaryText}"
+                   Margin="0,5,0,0" TextWrapping="Wrap"/>
+        <WrapPanel Margin="0,12,0,0">
+            <Button x:Name="ApplyButton" Content="Install service" Click="Apply_Click"/>
+            <Button x:Name="StartButton" Content="Start" Click="Start_Click"/>
+            <Button x:Name="StopButton" Content="Stop" Click="Stop_Click"/>
+            <Button x:Name="RestartButton" Content="Restart" Click="Restart_Click"/>
+            <Button x:Name="UpgradeButton" Content="Upgrade service" Click="Upgrade_Click"/>
+            <Button x:Name="RemoveButton" Content="Remove service" Click="Remove_Click"/>
+            <Button x:Name="EnableControlsButton" Content="Enable start and stop controls…" Click="EnableControls_Click"
+                    ToolTip="Approve once to let the configured account start, stop, and restart this service."/>
+        </WrapPanel>
+        <TextBlock x:Name="OperationText" TextWrapping="Wrap" Foreground="{StaticResource SecondaryText}" Margin="3,6,0,0"/>
+    </StackPanel>
+</Window>

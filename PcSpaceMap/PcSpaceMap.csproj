@@ -1,17 +1,26 @@
 <Project Sdk="Microsoft.NET.Sdk">
+  <Import Project="../PcSpaceMap.Version.props" />
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net9.0-windows</TargetFramework>
     <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>PC Space Map</AssemblyName>
     <RootNamespace>PcSpaceMap</RootNamespace>
-    <Version>0.2.0</Version>
+    <ApplicationIcon>Assets/PcSpaceMap.ico</ApplicationIcon>
     <Authors>PC Maintenance Toolkit</Authors>
     <Description>A local disk inventory and cleanup review tool for Windows.</Description>
   </PropertyGroup>
   <ItemGroup>
+    <Using Remove="System.Windows.Forms" />
+    <Using Remove="System.Drawing" />
+    <Resource Include="Assets/PcSpaceMap.ico" />
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <PackageReference Include="System.ServiceProcess.ServiceController" Version="9.0.16" />
+    <ProjectReference Include="../PcSpaceMap.Index/PcSpaceMap.Index.csproj" />
+    <Compile Remove="Models/*.cs;Services/*.cs" />
+    <Compile Include="Services/AgentControlServer.cs" />
   </ItemGroup>
 </Project>

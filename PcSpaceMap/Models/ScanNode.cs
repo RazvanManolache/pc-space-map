@@ -13,7 +13,17 @@ public sealed class ScanNode
     public DateTime LastWriteUtc { get; init; }
     public FileAttributes Attributes { get; init; }
     public ScanNode? Parent { get; set; }
-    public List<ScanNode> Children { get; } = [];
+    private List<ScanNode>? _children;
+    public Func<ScanNode, List<ScanNode>>? ChildrenLoader { get; init; }
+    public Func<long>? ChildCountLoader { get; init; }
+    public Func<IEnumerable<ScanNode>>? InventoryEnumerator { get; init; }
+    public long ChildCount => ChildCountLoader?.Invoke() ?? Children.Count;
+    public List<ScanNode> Children => _children ??= ChildrenLoader?.Invoke(this) ?? [];
+    public bool ChildrenLoaded => _children is not null;
+    public void ReleaseChildren() => _children = null;
+    public long? AllocatedSize { get; init; }
+    public long? UniqueAllocatedSize { get; init; }
+    public string AllocatedText => AllocatedSize.HasValue ? SizeFormatter.Format(AllocatedSize.Value) : "Unknown";
 
     public string SizeText => SizeFormatter.Format(Size);
     public string TypeText => IsDirectory ? "Folder" : (System.IO.Path.GetExtension(Name).TrimStart('.').ToUpperInvariant() is { Length: > 0 } ext ? ext : "File");
@@ -22,6 +32,11 @@ public sealed class ScanNode
 
     public IEnumerable<ScanNode> DescendantsAndSelf()
     {
+        if (InventoryEnumerator is not null)
+        {
+            foreach (var entry in InventoryEnumerator()) yield return entry;
+            yield break;
+        }
         var stack = new Stack<ScanNode>();
         stack.Push(this);
         while (stack.Count > 0)

@@ -12,18 +12,63 @@ namespace PcSpaceMap.Controls;
 public partial class ScanWorkspaceControl : UserControl
 {
     private CancellationTokenSource? _scanCancellation;
+    private CancellationTokenSource? _treemapPreviewCancellation;
     private ScanResult? _result;
     private ScanNode? _selectedNode;
     private bool _isScanning;
+    private bool _batchLocked;
+    private bool _serviceRequired;
     private bool _hasScopedRefreshes;
+    private int _contentsOffset;
+    private long _navigationVersion;
+    private ScanSettings _settings = ScanSettings.Load();
+    private bool _optionsReady;
 
     public ScanWorkspaceControl()
     {
         InitializeComponent();
         LoadDrives();
+        ScanModeBox.SelectedIndex = _settings.PreferNtfs ? 0 : 1;
+        WorkersBox.SelectedIndex = _settings.AutoTuneReaders ? 0 : _settings.Parallelism switch { <= 1 => 1, <= 2 => 2, <= 4 => 3, <= 8 => 4, _ => 5 };
+        SetMapDetail(Treemap.Detail);
+        _optionsReady = true;
+        UpdateScanControls();
     }
 
     public event EventHandler? TitleChanged;
+    internal event EventHandler? StopRequested;
+
+    internal void SetStatus(string status) => StatusText.Text = status;
+
+    internal void SetServiceFooter(string text, string details, bool serviceRequired, IReadOnlyList<ServiceDriveStatus> drives)
+    {
+        ServiceFooterText.Text = text;
+        ServiceFooterText.ToolTip = details;
+        ServiceDriveChips.ItemsSource = drives;
+        ServiceFooterPanel.Visibility = string.IsNullOrEmpty(text) ? Visibility.Collapsed : Visibility.Visible;
+        if (_serviceRequired != serviceRequired)
+        {
+            _serviceRequired = serviceRequired;
+            ScanButton.Content = serviceRequired ? "Show inventory" : "Scan now";
+            ScanButton.ToolTip = serviceRequired
+                ? "Open the latest service index immediately. Scan if an index is missing. Use Update changes to refresh an existing index."
+                : null;
+            if (!_usingService)
+                BackendLabel.Text = serviceRequired
+                    ? _result is null ? "Windows service" : "Standalone · saved view"
+                    : "Standalone";
+            UpdateScanControls();
+            SyncWatcher();
+        }
+    }
+
+    internal void SetBatchCaption(string? caption)
+    {
+        BatchText.Text = caption ?? "";
+        BatchText.Visibility = caption is null ? Visibility.Collapsed : Visibility.Visible;
+        _batchLocked = caption is not null;
+        UpdateScanControls();
+    }
 
     public bool IsScanning => _isScanning;
     public bool InventoryReady => _result is not null;
@@ -31,20 +76,38 @@ public partial class ScanWorkspaceControl : UserControl
     public string EffectivePath => _result?.Root.Path ?? NormalizePath(ConfiguredPath);
     public string TabTitle => BuildTabTitle();
     public string TabToolTip => string.IsNullOrWhiteSpace(EffectivePath) ? "Choose a drive or folder to scan." : EffectivePath;
+    private bool PickerMatchesInventory => _result is not null && string.Equals(
+        Path.TrimEndingDirectorySeparator(NormalizePath(ConfiguredPath)),
+        Path.TrimEndingDirectorySeparator(_result.Root.Path), StringComparison.OrdinalIgnoreCase);
 
     public void SetRootPath(string path)
     {
         if (string.IsNullOrWhiteSpace(path)) return;
         RootPathBox.Text = NormalizePath(path);
+        PickerChanged();
+    }
+
+    private void RootPathBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        // ComboBox updates Text after SelectionChanged for a picked drive.
+        _ = Dispatcher.BeginInvoke(new Action(PickerChanged));
+    }
+
+    private void PickerChanged()
+    {
+        UpdateScanControls();
+        if (!_isScanning && _result is not null)
+            StatusText.Text = PickerMatchesInventory ? $"Showing {_result.Root.Path}."
+                : $"Showing {_result.Root.Path}. Scan or open saved results for {ConfiguredPath} to switch.";
         RaiseTitleChanged();
     }
 
     public async Task<bool> StartScanAsync(string? requestedPath = null)
     {
-        if (_isScanning) return false;
+        if (_workspaceClosed || _isScanning) return false;
 
         var requested = requestedPath ?? ConfiguredPath;
-        if (string.IsNullOrWhiteSpace(requested) || !Directory.Exists(requested))
+        if (string.IsNullOrWhiteSpace(requested))
         {
             MessageBox.Show(Window.GetWindow(this), "Choose an existing drive or folder first.", "Folder not found", MessageBoxButton.OK, MessageBoxImage.Information);
             return false;
@@ -53,38 +116,46 @@ public partial class ScanWorkspaceControl : UserControl
         _isScanning = true;
         _scanCancellation = new CancellationTokenSource();
         SetScanningState(true);
-        ClearResults();
         RootPathBox.Text = NormalizePath(requested);
         RaiseTitleChanged();
 
         var progress = new Progress<ScanProgress>(p =>
         {
-            TotalSizeText.Text = SizeFormatter.Format(p.BytesFound);
-            FileCountText.Text = p.FileCount.ToString("N0");
-            FolderCountText.Text = p.DirectoryCount.ToString("N0");
-            StatusText.Text = $"Scanning {p.CurrentPath}";
+            if (_result is null)
+            {
+                TotalSizeText.Text = SizeFormatter.Format(p.BytesFound);
+                FileCountText.Text = p.FileCount.ToString("N0");
+                FolderCountText.Text = p.DirectoryCount.ToString("N0");
+            }
+            UpdateScanProgress(p);
             RaiseTitleChanged();
         });
 
         var completed = false;
         try
         {
-            _result = await new DiskScanner().ScanAsync(requested, progress, _scanCancellation.Token);
+            var remote = await ServiceInventoryClient.ScanAsync(requested, "scan", progress, _scanCancellation.Token, openPublished: true);
+            _result = remote ?? await _settings.Scanner().ScanAsync(requested, progress, _scanCancellation.Token);
+            SetBackend(remote is not null);
             _hasScopedRefreshes = false;
-            ShowResult(_result);
+            ShowResult(_result, remote is null ? null : $"Service inventory opened · indexed {remote.CompletedUtc.ToLocalTime():g}");
             completed = true;
         }
         catch (OperationCanceledException)
         {
-            StatusText.Text = "Scan stopped. Partial results were discarded.";
+            StatusText.Text = _result is null ? "Scan stopped. Partial results were discarded."
+                : $"Scan stopped. Still showing {_result.Root.Path}.";
         }
         catch (Exception ex)
         {
-            StatusText.Text = "Scan could not be completed.";
+            StatusText.Text = _result is null ? "Scan could not be completed."
+                : $"Scan failed. Still showing {_result.Root.Path}.";
             MessageBox.Show(Window.GetWindow(this), ex.Message, "Scan failed", MessageBoxButton.OK, MessageBoxImage.Error);
         }
         finally
         {
+            if (!completed && _result is null)
+                TotalSizeText.Text = FileCountText.Text = FolderCountText.Text = "—";
             _isScanning = false;
             SetScanningState(false);
             _scanCancellation?.Dispose();
@@ -95,12 +166,12 @@ public partial class ScanWorkspaceControl : UserControl
         return completed;
     }
 
-    public async Task<bool> RefreshCurrentFolderAsync()
+    public async Task<bool> RefreshCurrentFolderAsync(string? requestedPath = null, bool live = false)
     {
-        if (_isScanning || _result is null) return false;
+        if (_isScanning || _result is null || (live && (_usingService || _serviceRequired)) || (!live && !PickerMatchesInventory)) return false;
 
-        var target = GetRefreshTargetNode();
-        if (target is null)
+        var targetPath = requestedPath ?? GetRefreshTargetNode()?.Path;
+        if (targetPath is null)
         {
             MessageBox.Show(Window.GetWindow(this), "Select or zoom into a folder first.", "No folder selected", MessageBoxButton.OK, MessageBoxImage.Information);
             return false;
@@ -112,23 +183,35 @@ public partial class ScanWorkspaceControl : UserControl
         _isScanning = true;
         _scanCancellation = new CancellationTokenSource();
         SetScanningState(true);
-        StatusText.Text = $"Updating {target.Path}";
+        StatusText.Text = $"Updating {targetPath}";
         ElapsedText.Text = "";
         RaiseTitleChanged();
 
         var progress = new Progress<ScanProgress>(p =>
         {
-            StatusText.Text = $"Updating {p.CurrentPath}";
+            UpdateScanProgress(p);
             RaiseTitleChanged();
         });
 
         var completed = false;
         try
         {
-            var subtreeResult = await new DiskScanner().ScanAsync(target.Path, progress, _scanCancellation.Token);
-            _result = ReplaceSubtreeAndRebuildResult(target, subtreeResult);
-            _hasScopedRefreshes = !string.Equals(_result.Root.Path, subtreeResult.Root.Path, StringComparison.OrdinalIgnoreCase);
-            ShowResult(_result, $"Folder updated: {target.Path}", $"Updated in {FormatDuration(subtreeResult.Duration)}");
+            var journal = live && string.Equals(_result.Root.Path, targetPath, StringComparison.OrdinalIgnoreCase);
+            var remote = await ServiceInventoryClient.ScanAsync(_result.Root.Path, "update", progress, _scanCancellation.Token,
+                folderToRefresh: targetPath);
+            var updated = remote ?? (_usingService
+                ? await _settings.Scanner().ScanAsync(_result.Root.Path, progress, _scanCancellation.Token)
+                : await _settings.Scanner().RefreshAsync(_result, journal ? null : targetPath, progress, _scanCancellation.Token));
+            if (live)
+            {
+                selectedPathBefore = _selectedNode?.Path;
+                viewPathBefore = Treemap.Root?.Path;
+            }
+            _result = updated;
+            SetBackend(remote is not null);
+            _hasScopedRefreshes = !string.Equals(_result.Root.Path, targetPath, StringComparison.OrdinalIgnoreCase);
+            ShowResult(_result, live ? $"Live update complete: {targetPath}" : $"Folder updated: {targetPath}",
+                $"Updated in {FormatDuration(_result.Duration)}", preserveView: true);
             RestoreNavigation(viewPathBefore, selectedPathBefore);
             completed = true;
         }
@@ -139,7 +222,8 @@ public partial class ScanWorkspaceControl : UserControl
         catch (Exception ex)
         {
             StatusText.Text = "Folder update could not be completed.";
-            MessageBox.Show(Window.GetWindow(this), ex.Message, "Folder update failed", MessageBoxButton.OK, MessageBoxImage.Error);
+            if (live) StatusText.Text = "Live update failed: " + ex.Message;
+            else MessageBox.Show(Window.GetWindow(this), ex.Message, "Folder update failed", MessageBoxButton.OK, MessageBoxImage.Error);
         }
         finally
         {
@@ -184,6 +268,15 @@ public partial class ScanWorkspaceControl : UserControl
             inventoryReady = true,
             root = ToAgentNode(_result.Root, 0, 0),
             durationSeconds = Math.Round(_result.Duration.TotalSeconds, 2),
+            snapshotId = _result.SnapshotId,
+            completedUtc = _result.CompletedUtc,
+            scanMethod = _result.ScanMethod,
+            timings = _result.Timings,
+            work = _result.Work,
+            backend = _usingService ? "Windows service" : "Standalone",
+            allocatedBytes = _result.Root.AllocatedSize,
+            uniqueAllocatedBytes = _result.Root.UniqueAllocatedSize,
+            changes = _result.Changes,
             fileCount = _result.FileCount,
             folderCount = _result.DirectoryCount,
             skippedReparsePoints = _result.SkippedReparsePoints,
@@ -191,7 +284,7 @@ public partial class ScanWorkspaceControl : UserControl
             topLevel = _result.Root.Children.Where(x => x.Size > 0).Take(50).Select(x => ToAgentNode(x, 0, 0)),
             largestFiles = _result.LargestFiles.Take(100).Select(x => ToAgentNode(x, 0, 0)),
             suggestions = _result.Suggestions.Select(ToAgentSuggestion),
-            safety = "Suggestions are advisory. PC Space Map does not delete files."
+            safety = "Inventory and assistant controls are read-only. Windows context-menu commands can modify files."
         };
     }
 
@@ -218,7 +311,9 @@ public partial class ScanWorkspaceControl : UserControl
             return new { inventoryReady = false, files = Array.Empty<object>() };
 
         var basePath = string.IsNullOrWhiteSpace(under) ? _result.Root.Path : Path.GetFullPath(under);
-        var files = _result.LargestFiles
+        if (!IsSameOrBelow(basePath, _result.Root.Path))
+            return new { inventoryReady = true, under = basePath, limit, files = Array.Empty<object>() };
+        var files = (_result.Inventory?.Largest(_result.SnapshotId, basePath, limit) ?? _result.LargestFiles)
             .Where(x => IsSameOrBelow(x.Path, basePath))
             .Take(limit)
             .Select(x => ToAgentNode(x, 0, 0));
@@ -232,6 +327,49 @@ public partial class ScanWorkspaceControl : UserControl
         totalPotential = _result?.Suggestions.Sum(x => x.Size) ?? 0,
         suggestions = _result?.Suggestions.Select(ToAgentSuggestion) ?? []
     };
+
+    internal object BuildAgentChanges() => new
+    {
+        inventoryReady = _result is not null,
+        snapshotId = _result?.SnapshotId,
+        completedUtc = _result?.CompletedUtc,
+        changes = _result?.Changes ?? []
+    };
+
+    internal object BuildAgentChildren(string? path, int offset, int limit)
+    {
+        var node = string.IsNullOrWhiteSpace(path) ? Treemap.Root : FindNode(path);
+        if (_result?.Inventory is null || node?.IsDirectory != true) return new { found = false };
+        return new { found = true, path = node.Path, offset, limit, total = node.ChildCount,
+            entries = _result.Inventory.Children(_result.SnapshotId, node, offset, limit).Select(x => ToAgentNode(x, 0, 0)).ToArray() };
+    }
+
+    internal bool BeginUpdateChanges()
+    {
+        if (_isScanning || !PickerMatchesInventory) return false;
+        UpdateChangesButton_Click(this, new RoutedEventArgs());
+        return true;
+    }
+    internal bool BeginUpdateFolder(string path)
+    {
+        if (_isScanning || _result is null || !PickerMatchesInventory || string.IsNullOrWhiteSpace(path)) return false;
+        try
+        {
+            path = InventoryStore.Normalize(path);
+            if (!IsSameOrBelow(path, _result.Root.Path)) return false;
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException) { return false; }
+        _ = RefreshCurrentFolderAsync(path);
+        return true;
+    }
+
+    internal bool BeginOpenSaved(string path)
+    {
+        if (_isScanning) return false;
+        SetRootPath(path);
+        SavedButton_Click(this, new RoutedEventArgs());
+        return true;
+    }
 
     internal object BuildAgentIssues() => new
     {
@@ -271,10 +409,9 @@ public partial class ScanWorkspaceControl : UserControl
             .Select(x => $"{x.RootDirectory.FullName}   {x.VolumeLabel}   ({SizeFormatter.Format(x.AvailableFreeSpace)} free)")
             .ToList();
         RootPathBox.ItemsSource = drives;
-        RootPathBox.Text = Path.GetPathRoot(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)) ?? "C:\\";
     }
 
-    private void ShowResult(ScanResult result, string? statusOverride = null, string? elapsedOverride = null)
+    private void ShowResult(ScanResult result, string? statusOverride = null, string? elapsedOverride = null, bool preserveView = false)
     {
         TotalSizeText.Text = result.Root.SizeText;
         FileCountText.Text = result.FileCount.ToString("N0");
@@ -283,49 +420,126 @@ public partial class ScanWorkspaceControl : UserControl
         ElapsedText.Text = elapsedOverride ?? $"Completed in {FormatDuration(result.Duration)}";
         StatusText.Text = statusOverride ?? $"Inventory complete: {result.Root.Path}";
 
-        LargestFilesGrid.ItemsSource = result.LargestFiles;
-        CleanupGrid.ItemsSource = result.Suggestions;
-        IssuesGrid.ItemsSource = result.Issues;
+        if (!preserveView || _mapFilter is null) LargestFilesGrid.ItemsSource = result.LargestFiles;
+        RefreshStoredLists(result);
+        if (!preserveView)
+        {
+            _searchCancellation?.Cancel();
+            if (ReferenceEquals(MainTabs.SelectedItem, SearchTab)) _ = RunSearchAsync(0);
+        }
+        ChangesSummaryText.Text = result.Changes.Count == 0 ? "No changes, or no previous inventory for comparison."
+            : $"Largest {result.Changes.Count:N0} changes since the preceding saved inventory. Folder rows include their descendants; do not add rows together.";
+        var readerLabel = result.Work is { ReaderCount: > 0 } work ? $" | {work.ReaderCount} readers" : "";
+        MethodText.Text = $"{result.ScanMethod}{readerLabel} | {result.CompletedUtc.ToLocalTime():yyyy-MM-dd HH:mm}";
         IssueSummaryText.Text = BuildIssueSummary(result);
         ExportButton.IsEnabled = true;
-        MainTabs.SelectedIndex = 0;
-        ZoomTo(result.Root);
-        SelectNode(result.Root);
-        RaiseTitleChanged();
-    }
-
-    private void ClearResults()
-    {
-        _result = null;
-        _selectedNode = null;
-        Treemap.Root = null;
-        LargestFilesGrid.ItemsSource = null;
-        CleanupGrid.ItemsSource = null;
-        IssuesGrid.ItemsSource = null;
-        BreadcrumbPanel.Children.Clear();
-        CleanupSizeText.Text = "—";
-        ElapsedText.Text = "";
-        ExportButton.IsEnabled = false;
-        _hasScopedRefreshes = false;
-        SelectNode(null);
+        if (!preserveView)
+        {
+            if (!ReferenceEquals(MainTabs.SelectedItem, SearchTab)) MainTabs.SelectedIndex = 0;
+            ResetMapHistory();
+            ZoomTo(result.Root, remember: false);
+            SelectNode(result.Root);
+        }
+        SyncWatcher();
         RaiseTitleChanged();
     }
 
     private void SetScanningState(bool scanning)
     {
-        ScanButton.IsEnabled = !scanning;
-        BrowseButton.IsEnabled = !scanning;
-        RootPathBox.IsEnabled = !scanning;
-        RefreshFolderButton.IsEnabled = !scanning && GetRefreshTargetNode() is not null;
-        RefreshSelectedButton.IsEnabled = !scanning && GetRefreshTargetNode() is not null;
-        CancelButton.IsEnabled = scanning;
-        ScanProgressBar.Visibility = scanning ? Visibility.Visible : Visibility.Collapsed;
+        UpdateScanControls();
+        CancelButton.IsEnabled = scanning && _scanCancellation is not null;
+        ScanProgressPanel.Visibility = scanning ? Visibility.Visible : Visibility.Collapsed;
+        ScanProgressBar.IsIndeterminate = true;
+        ScanPercentText.Text = "";
         if (scanning) StatusText.Text = "Starting scan…";
         RaiseTitleChanged();
     }
 
+    private void UpdateScanProgress(ScanProgress progress)
+    {
+        if (!_isScanning) return;
+        var percent = progress.PhasePercent;
+        ScanProgressBar.IsIndeterminate = !percent.HasValue;
+        ScanProgressBar.Value = percent ?? 0;
+        ScanPercentText.Text = percent is int value ? $"{value}%" : "";
+        ScanProgressPanel.ToolTip = percent.HasValue ? $"{progress.Phase} · {percent}% of this phase" : progress.Phase;
+        StatusText.Text = progress.CurrentPath.Length > 0 && progress.CurrentPath != progress.Phase
+            ? $"{progress.Phase} · {progress.CurrentPath}" : progress.Phase;
+    }
+
+    private void UpdateScanControls()
+    {
+        var available = !_workspaceClosed && !_isScanning && !_batchLocked;
+        var hasPath = !string.IsNullOrWhiteSpace(ConfiguredPath);
+        ScanButton.IsEnabled = available && hasPath;
+        SavedButton.IsEnabled = available && hasPath;
+        BrowseButton.IsEnabled = available;
+        RootPathBox.IsEnabled = available;
+        var refreshTarget = PickerMatchesInventory ? GetRefreshTargetNode() : null;
+        RefreshFolderButton.IsEnabled = available && refreshTarget is not null;
+        RefreshSelectedButton.IsEnabled = RefreshFolderButton.IsEnabled;
+        RefreshSelectedButton.ToolTip = RefreshFolderButton.ToolTip = refreshTarget is not null ? $"Refresh {refreshTarget.Path}"
+            : null;
+        UpdateChangesButton.IsEnabled = available && PickerMatchesInventory;
+        ScanModeBox.IsEnabled = available && !_serviceRequired;
+        WorkersBox.IsEnabled = available && !_serviceRequired;
+        WatchBox.IsEnabled = available && !_serviceRequired && !_usingService;
+    }
+
     private async void ScanButton_Click(object sender, RoutedEventArgs e) => await StartScanAsync();
     private async void RefreshFolderButton_Click(object sender, RoutedEventArgs e) => await RefreshCurrentFolderAsync();
+
+    private void ScanOptions_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        if (!_optionsReady) return;
+        _settings.PreferNtfs = ScanModeBox.SelectedIndex == 0;
+        var readers = ((ComboBoxItem)WorkersBox.SelectedItem).Content.ToString()!;
+        _settings.AutoTuneReaders = readers == "Auto";
+        if (!_settings.AutoTuneReaders) _settings.Parallelism = int.Parse(readers);
+        try { _settings.Save(); } catch (Exception ex) { StatusText.Text = "Could not save scan options: " + ex.Message; }
+    }
+
+    private async void SavedButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_isScanning) return;
+        _isScanning = true;
+        SetScanningState(true);
+        try
+        {
+            var (usesService, saved) = await ServiceInventoryClient.OpenSavedAsync(ConfiguredPath);
+            var result = usesService ? saved : await new DiskScanner().LoadSavedAsync(ConfiguredPath);
+            if (result is null) { StatusText.Text = "No saved inventory for this path."; return; }
+            _result = result;
+            SetBackend(usesService);
+            ShowResult(result, "Saved inventory opened. " + result.CompletedUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm"));
+        }
+        catch (Exception ex) { StatusText.Text = "Could not open inventory: " + ex.Message; }
+        finally { _isScanning = false; SetScanningState(false); RaiseTitleChanged(); }
+    }
+
+    private async void UpdateChangesButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_isScanning || _result is null || !PickerMatchesInventory) return;
+        var view = Treemap.Root?.Path;
+        _isScanning = true;
+        _scanCancellation = new();
+        SetScanningState(true);
+        try
+        {
+            var progress = new Progress<ScanProgress>(UpdateScanProgress);
+            var remote = await ServiceInventoryClient.ScanAsync(_result.Root.Path, "update", progress, _scanCancellation.Token);
+            _result = remote ?? (_usingService
+                ? await _settings.Scanner().ScanAsync(_result.Root.Path, progress, _scanCancellation.Token)
+                : await _settings.Scanner().RefreshAsync(_result, null, progress, _scanCancellation.Token));
+            SetBackend(remote is not null);
+            _hasScopedRefreshes = false;
+            ShowResult(_result, preserveView: true);
+            RestoreNavigation(view, null);
+        }
+        catch (OperationCanceledException) { StatusText.Text = "Update stopped. Previous inventory retained."; }
+        catch (Exception ex) { StatusText.Text = "Update failed: " + ex.Message; }
+        finally { _isScanning = false; _scanCancellation.Dispose(); _scanCancellation = null; SetScanningState(false); RaiseTitleChanged(); }
+    }
 
     private void BrowseButton_Click(object sender, RoutedEventArgs e)
     {
@@ -337,16 +551,22 @@ public partial class ScanWorkspaceControl : UserControl
         };
         if (dialog.ShowDialog(Window.GetWindow(this)) == true)
         {
-            RootPathBox.Text = dialog.FolderName;
-            RaiseTitleChanged();
+            SetRootPath(dialog.FolderName);
         }
     }
 
     private void CancelButton_Click(object sender, RoutedEventArgs e)
     {
+        StopRequested?.Invoke(this, EventArgs.Empty);
+        RequestStop();
+    }
+
+    internal void RequestStop()
+    {
+        if (_scanCancellation is not { IsCancellationRequested: false } cancellation) return;
         CancelButton.IsEnabled = false;
-        StatusText.Text = "Stopping after the current folder…";
-        _scanCancellation?.Cancel();
+        StatusText.Text = "Stopping…";
+        cancellation.Cancel();
         RaiseTitleChanged();
     }
 
@@ -367,7 +587,7 @@ public partial class ScanWorkspaceControl : UserControl
         StatusText.Text = "Exporting inventory…";
         try
         {
-            await CsvExporter.ExportAsync(_result.Root, dialog.FileName);
+            await CsvExporter.ExportAsync(_result, dialog.FileName);
             StatusText.Text = $"Inventory exported to {dialog.FileName}";
         }
         catch (Exception ex)
@@ -382,28 +602,174 @@ public partial class ScanWorkspaceControl : UserControl
         }
     }
 
-    private void Treemap_NodeSelected(object sender, ScanNode node) => SelectNode(node);
-    private void Treemap_ZoomRequested(object sender, ScanNode node) => ZoomTo(node);
+    private void Treemap_NodeSelected(object sender, ScanNode node) => SelectNode(ResolveMapNode(node));
+    private void Treemap_ZoomRequested(object sender, ScanNode node)
+    {
+        if (ResolveMapNode(node) is { } folder) ZoomTo(folder);
+    }
+
+    // Filtered tiles carry matching sizes. Navigation and folder operations need the inventory node.
+    private ScanNode? ResolveMapNode(ScanNode node) =>
+        node.IsDirectory && ReferenceEquals(Treemap.FilteredFolder(node.Path), node) ? FindNode(node.Path) : node;
 
     private void SelectNode(ScanNode? node)
     {
         _selectedNode = node;
+        Treemap.SelectedPath = node?.Path;
         SelectedNameText.Text = node?.Name ?? "Nothing selected";
-        SelectedSizeText.Text = node?.SizeText ?? "—";
-        SelectedContentsText.Text = BuildSelectedSummary(node);
+        UpdateSelectedSummary(node);
         SelectedPathText.Text = node?.Path ?? "—";
         OpenSelectedButton.IsEnabled = node is not null;
         ZoomSelectedButton.IsEnabled = node?.IsDirectory == true;
-        RefreshFolderButton.IsEnabled = !_isScanning && GetRefreshTargetNode() is not null;
-        RefreshSelectedButton.IsEnabled = !_isScanning && GetRefreshTargetNode() is not null;
+        UpdateScanControls();
     }
 
-    private void ZoomTo(ScanNode node)
+    private void UpdateSelectedSummary(ScanNode? node)
     {
-        if (!node.IsDirectory) return;
+        var matching = node is { IsDirectory: true } ? Treemap.FilteredFolder(node.Path) : null;
+        SelectedSizeText.Text = matching?.SizeText ?? node?.SizeText ?? "—";
+        SelectedContentsText.Text = matching is null ? BuildSelectedSummary(node)
+            : $"{matching.FileCount:N0} matching {(matching.FileCount == 1 ? "file" : "files")} shown";
+    }
+
+    private async void ZoomTo(ScanNode node, bool remember = true, int historyDirection = 0, ScanNode? selection = null,
+        bool keepMap = false)
+    {
+        if (!node.IsDirectory || (_result is not null && !IsSameOrBelow(node.Path, _result.Root.Path))) return;
+        _treemapPreviewCancellation?.Cancel();
+        var inventory = _result;
+        var version = ++_navigationVersion;
+        if (!node.ChildrenLoaded)
+        {
+            try { await Task.Run(() => _ = node.Children); }
+            catch (Exception ex) { StatusText.Text = "Could not load folder: " + ex.Message; return; }
+            if (_result != inventory || version != _navigationVersion) return;
+        }
+        var previous = Treemap.Root;
+        keepMap = keepMap && string.Equals(previous?.Path, node.Path, StringComparison.OrdinalIgnoreCase);
+        var preview = keepMap ? await ReadTreemapPreviewAsync(node, inventory, version) : null;
+        if (_workspaceClosed || _result != inventory || version != _navigationVersion) return;
+        CommitMapNavigation(previous?.Path, node.Path, remember, historyDirection);
         Treemap.Root = node;
-        SelectNode(node);
+        if (preview is not null) Treemap.SetPreview(preview);
+        if (previous is not null && !ReferenceEquals(previous, node)) previous.ReleaseChildren();
+        SelectNode(selection ?? node);
+        RefreshFreeTile();
         BuildBreadcrumbs(node);
+        _contentsOffset = 0;
+        await Task.WhenAll(ShowContentsAsync(node, inventory),
+            keepMap ? Task.CompletedTask : LoadTreemapPreviewAsync(node, inventory, version), RefreshFilterAsync(keepMap));
+    }
+
+    private async Task LoadTreemapPreviewAsync(ScanNode node, ScanResult? inventory, long version)
+    {
+        var preview = await ReadTreemapPreviewAsync(node, inventory, version);
+        if (preview is not null && _result == inventory && version == _navigationVersion) Treemap.SetPreview(preview);
+    }
+
+    private async Task<IReadOnlyDictionary<ScanNode, IReadOnlyList<ScanNode>>?> ReadTreemapPreviewAsync(
+        ScanNode node, ScanResult? inventory, long version)
+    {
+        if (inventory?.Inventory is not { } store || node.Size <= 0) return null;
+        using var cancellation = new CancellationTokenSource();
+        _treemapPreviewCancellation = cancellation;
+        try
+        {
+            var children = node.Children.ToArray();
+            return await Task.Run(() =>
+            {
+                var result = new Dictionary<ScanNode, IReadOnlyList<ScanNode>>();
+                var pending = new PriorityQueue<(ScanNode Node, int Depth), long>();
+                void Enqueue(IEnumerable<ScanNode> candidates, int depth)
+                {
+                    if (depth >= TreemapControl.MaxDepth) return;
+                    foreach (var candidate in candidates)
+                        if (candidate.IsDirectory && candidate.Size > 0 && candidate.Size >= node.Size / 3500)
+                            pending.Enqueue((candidate, depth), -candidate.Size);
+                }
+                Enqueue(children, 0);
+                while (result.Count < 96 && pending.TryDequeue(out var item, out _))
+                {
+                    cancellation.Token.ThrowIfCancellationRequested();
+                    var entries = store.Children(inventory.SnapshotId, item.Node, limit: 64);
+                    result.Add(item.Node, entries);
+                    Enqueue(entries, item.Depth + 1);
+                }
+                return result;
+            }, cancellation.Token);
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { }
+        catch (Exception ex)
+        {
+            if (_result == inventory && version == _navigationVersion)
+                StatusText.Text = "Could not load treemap detail: " + ex.Message;
+        }
+        finally
+        {
+            if (ReferenceEquals(_treemapPreviewCancellation, cancellation)) _treemapPreviewCancellation = null;
+        }
+        return null;
+    }
+
+    private async Task ShowContentsAsync(ScanNode node, ScanResult? inventory)
+    {
+        if (inventory?.Inventory is not { } store) return;
+        const int pageSize = 200;
+        var offset = _contentsOffset;
+        var filter = _listNameFilter;
+        _contentsCancellation?.Cancel();
+        using var cancellation = new CancellationTokenSource();
+        _contentsCancellation = cancellation;
+        var token = cancellation.Token;
+        ContentsPreviousButton.IsEnabled = ContentsNextButton.IsEnabled = false;
+        try
+        {
+            var page = await Task.Run(() => store.Children(inventory.SnapshotId, node, offset, pageSize + 1, filter, token), token);
+            if (token.IsCancellationRequested || _result != inventory || Treemap.Root != node || _contentsOffset != offset) return;
+            var rows = page.Take(pageSize).ToArray();
+            ContentsGrid.ItemsSource = rows;
+            ContentsPageText.Text = rows.Length == 0 ? (filter is null ? "No entries" : "No matching entries")
+                : $"{offset + 1:N0}–{offset + rows.Length:N0}" + (filter is null ? $" of {node.ChildCount:N0}" : " matching names");
+            ContentsPreviousButton.IsEnabled = offset > 0;
+            ContentsNextButton.IsEnabled = page.Count > pageSize;
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (Exception ex) { if (!token.IsCancellationRequested) ContentsPageText.Text = "Could not load folder: " + ex.Message; }
+        finally { if (ReferenceEquals(_contentsCancellation, cancellation)) _contentsCancellation = null; }
+    }
+
+    private async void ContentsPage_Click(object sender, RoutedEventArgs e)
+    {
+        if (Treemap.Root is not { } node) return;
+        _contentsOffset = Math.Max(0, _contentsOffset + (ReferenceEquals(sender, ContentsNextButton) ? 200 : -200));
+        await ShowContentsAsync(node, _result);
+    }
+
+    private void InventoryGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is DataGrid grid) OpenInventoryRow(grid);
+    }
+
+    private void InventoryGrid_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.Enter || sender is not DataGrid { SelectedItem: not null } grid) return;
+        OpenInventoryRow(grid);
+        e.Handled = true;
+    }
+
+    private void OpenInventoryRow(DataGrid grid)
+    {
+        if (grid.SelectedItem is ScanNode node)
+        {
+            if (node.IsDirectory)
+            {
+                if (ReferenceEquals(grid, SearchResultsGrid)) MainTabs.SelectedIndex = 0;
+                ZoomTo(node);
+            }
+            else OpenInExplorer(node.Path, selectFile: true);
+        }
+        else if (grid.SelectedItem is CleanupSuggestion suggestion)
+            OpenInExplorer(suggestion.SamplePath, selectFile: true);
     }
 
     private void BuildBreadcrumbs(ScanNode current)
@@ -411,7 +777,10 @@ public partial class ScanWorkspaceControl : UserControl
         BreadcrumbPanel.Children.Clear();
         var chain = new Stack<ScanNode>();
         for (var node = current; node is not null; node = node.Parent)
+        {
             chain.Push(node);
+            if (string.Equals(node.Path, _result?.Root.Path, StringComparison.OrdinalIgnoreCase)) break;
+        }
 
         while (chain.Count > 0)
         {
@@ -429,6 +798,7 @@ public partial class ScanWorkspaceControl : UserControl
             if (chain.Count > 0)
                 BreadcrumbPanel.Children.Add(new TextBlock { Text = "›", Foreground = FindResource("SecondaryText") as System.Windows.Media.Brush, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(2, 0, 2, 0) });
         }
+        BreadcrumbScroll.ScrollToRightEnd();
     }
 
     private void OpenSelectedButton_Click(object sender, RoutedEventArgs e)
@@ -439,16 +809,6 @@ public partial class ScanWorkspaceControl : UserControl
     private void ZoomSelectedButton_Click(object sender, RoutedEventArgs e)
     {
         if (_selectedNode?.IsDirectory == true) ZoomTo(_selectedNode);
-    }
-
-    private void LargestFilesGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
-    {
-        if (LargestFilesGrid.SelectedItem is ScanNode node) OpenInExplorer(node.Path, selectFile: true);
-    }
-
-    private void CleanupGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
-    {
-        if (CleanupGrid.SelectedItem is CleanupSuggestion suggestion) OpenInExplorer(suggestion.SamplePath, selectFile: true);
     }
 
     private static void OpenInExplorer(string path, bool selectFile)
@@ -492,7 +852,7 @@ public partial class ScanWorkspaceControl : UserControl
     private string BuildTabTitle()
     {
         var basePath = EffectivePath;
-        var title = string.IsNullOrWhiteSpace(basePath) ? "New scan" : ToShortTabLabel(basePath);
+        var title = string.IsNullOrWhiteSpace(basePath) ? "New tab" : ToShortTabLabel(basePath);
         return _isScanning ? $"{title} • scanning" : title;
     }
 
@@ -524,7 +884,8 @@ public partial class ScanWorkspaceControl : UserControl
         if (node.IsDirectory && TryGetDriveUsage(node.Path, out var usage))
             return $"{node.FileCount:N0} files · {node.DirectoryCount:N0} folders · {usage}";
 
-        return node.ContentsText;
+        return node.ContentsText + $" · {node.AllocatedText} allocated" +
+            (node.UniqueAllocatedSize.HasValue ? $" · {SizeFormatter.Format(node.UniqueAllocatedSize.Value)} excluding repeated hard links" : "");
     }
 
     private string BuildIssueSummary(ScanResult result)
@@ -547,109 +908,31 @@ public partial class ScanWorkspaceControl : UserControl
         if (_selectedNode?.IsDirectory == true)
             return _selectedNode;
 
+        if (_selectedNode is { IsDirectory: false } file)
+            return file.Parent ?? (Path.GetDirectoryName(file.Path) is { } parent ? FindNode(parent) : null);
+
         if (Treemap.Root?.IsDirectory == true)
             return Treemap.Root;
 
         return _result.Root.IsDirectory ? _result.Root : null;
     }
 
-    private ScanResult ReplaceSubtreeAndRebuildResult(ScanNode target, ScanResult subtreeResult)
-    {
-        if (_result is null)
-            return subtreeResult;
-
-        ScanNode updatedRoot;
-        if (target.Parent is null)
-        {
-            updatedRoot = subtreeResult.Root;
-        }
-        else
-        {
-            var parent = target.Parent;
-            var index = parent.Children.IndexOf(target);
-            if (index < 0)
-                throw new InvalidOperationException("The selected folder is no longer present in the current inventory.");
-
-            subtreeResult.Root.Parent = parent;
-            parent.Children[index] = subtreeResult.Root;
-            RecalculateDirectory(parent);
-
-            for (var ancestor = parent.Parent; ancestor is not null; ancestor = ancestor.Parent)
-                RecalculateDirectory(ancestor);
-
-            updatedRoot = _result.Root;
-        }
-
-        var cleanup = new CleanupAnalyzer();
-        var largestFiles = new List<ScanNode>();
-        foreach (var node in updatedRoot.DescendantsAndSelf())
-        {
-            if (node.IsDirectory) continue;
-            largestFiles.Add(node);
-            cleanup.Consider(node.Path, node.Size, node.LastWriteUtc);
-        }
-
-        largestFiles.Sort((a, b) => b.Size.CompareTo(a.Size));
-        if (largestFiles.Count > 5000)
-            largestFiles.RemoveRange(5000, largestFiles.Count - 5000);
-
-        var retainedIssues = _result.Issues.Where(x => !IsSameOrBelow(x.Path, target.Path)).ToList();
-        retainedIssues.AddRange(subtreeResult.Issues);
-
-        return new ScanResult
-        {
-            Root = updatedRoot,
-            LargestFiles = largestFiles,
-            Suggestions = cleanup.Build(),
-            Issues = retainedIssues,
-            Duration = subtreeResult.Duration,
-            FileCount = updatedRoot.FileCount,
-            DirectoryCount = updatedRoot.DirectoryCount + 1,
-            SkippedReparsePoints = _result.SkippedReparsePoints
-        };
-    }
 
     private void RestoreNavigation(string? viewPathBefore, string? selectedPathBefore)
     {
+        if (_result is null) return;
         var viewNode = !string.IsNullOrWhiteSpace(viewPathBefore) ? FindNode(viewPathBefore) : null;
-        if (viewNode?.IsDirectory == true)
-            ZoomTo(viewNode);
-        else if (_result is not null)
-            ZoomTo(_result.Root);
-
         var selectedNode = !string.IsNullOrWhiteSpace(selectedPathBefore) ? FindNode(selectedPathBefore) : null;
-        if (selectedNode is not null)
-            SelectNode(selectedNode);
+        ZoomTo(viewNode?.IsDirectory == true ? viewNode : _result.Root, remember: false, selection: selectedNode, keepMap: true);
     }
 
-    private static void RecalculateDirectory(ScanNode node)
-    {
-        if (!node.IsDirectory)
-            return;
-
-        foreach (var child in node.Children.Where(x => x.IsDirectory))
-            RecalculateDirectory(child);
-
-        node.Children.Sort((a, b) => b.Size.CompareTo(a.Size));
-        node.Size = node.Children.Sum(x => x.Size);
-        node.FileCount = node.Children.Sum(x => x.FileCount);
-        node.DirectoryCount = node.Children.Sum(x => x.IsDirectory ? x.DirectoryCount + 1 : 0);
-    }
 
     private static bool TryGetDriveUsage(string path, out string usage)
     {
         usage = "";
         try
         {
-            var normalized = NormalizePath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-            var root = Path.GetPathRoot(normalized)?.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-            if (string.IsNullOrWhiteSpace(root) || !string.Equals(normalized, root, StringComparison.OrdinalIgnoreCase))
-                return false;
-
-            var drive = new DriveInfo(root);
-            if (!drive.IsReady)
-                return false;
-
+            if (GetReadyDriveRoot(path) is not { } drive) return false;
             usage = $"{SizeFormatter.Format(drive.AvailableFreeSpace)} free of {SizeFormatter.Format(drive.TotalSize)}";
             return true;
         }
@@ -661,7 +944,8 @@ public partial class ScanWorkspaceControl : UserControl
 
     private ScanNode? FindNode(string path)
     {
-        if (_result is null) return null;
+        if (_result is null || !IsSameOrBelow(path, _result.Root.Path)) return null;
+        if (_result.Inventory is not null) return _result.Inventory.Find(_result.SnapshotId, path);
         var target = Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
         var rootPath = _result.Root.Path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
         if (string.Equals(target, rootPath, StringComparison.OrdinalIgnoreCase)) return _result.Root;
@@ -679,9 +963,10 @@ public partial class ScanWorkspaceControl : UserControl
         return current;
     }
 
-    private static object ToAgentNode(ScanNode node, int depth, int limit)
+    private object ToAgentNode(ScanNode node, int depth, int limit)
     {
-        var children = limit > 0 ? node.Children.Where(x => x.Size > 0).Take(limit).ToList() : [];
+        var children = depth > 0 && limit > 0 ?
+            (_result?.Inventory?.Children(_result.SnapshotId, node, 0, limit) ?? node.Children).Take(limit).ToList() : [];
         var includedSize = children.Sum(x => x.Size);
         return new
         {
@@ -689,13 +974,15 @@ public partial class ScanWorkspaceControl : UserControl
             node.Path,
             kind = node.IsDirectory ? "folder" : "file",
             node.Size,
+            node.AllocatedSize,
+            node.UniqueAllocatedSize,
             node.SizeText,
             node.FileCount,
             node.DirectoryCount,
             node.ModifiedText,
-            childCount = node.Children.Count,
+            childCount = node.IsDirectory ? node.ChildCount : 0,
             returnedChildCount = children.Count,
-            omittedChildCount = Math.Max(0, node.Children.Count - children.Count),
+            omittedChildCount = Math.Max(0, (node.IsDirectory ? node.ChildCount : 0) - children.Count),
             omittedSize = Math.Max(0, node.Size - includedSize),
             children = depth > 0 ? children.Select(x => ToAgentNode(x, depth - 1, limit)) : []
         };
@@ -714,8 +1001,8 @@ public partial class ScanWorkspaceControl : UserControl
 
     private static bool IsSameOrBelow(string candidate, string basePath)
     {
-        var normalizedBase = Path.GetFullPath(basePath).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-        var normalizedCandidate = Path.GetFullPath(candidate).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var normalizedBase = InventoryStore.Normalize(basePath).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var normalizedCandidate = InventoryStore.Normalize(candidate).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
         return string.Equals(normalizedCandidate, normalizedBase, StringComparison.OrdinalIgnoreCase) ||
                normalizedCandidate.StartsWith(normalizedBase + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
     }

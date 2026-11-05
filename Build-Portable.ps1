@@ -1,10 +1,12 @@
 [CmdletBinding()]
-param()
+param([string]$OutputFolder)
 
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $projectFile = Join-Path $projectRoot 'PcSpaceMap\PcSpaceMap.csproj'
-$outputFolder = Join-Path $projectRoot 'dist\PC-Space-Map'
+if (!$OutputFolder) {
+    $OutputFolder = Join-Path $projectRoot 'dist\PC-Space-Map'
+}
 
 dotnet publish $projectFile `
     --configuration Release `
@@ -13,11 +15,27 @@ dotnet publish $projectFile `
     --output $outputFolder `
     -p:PublishSingleFile=true `
     -p:EnableCompressionInSingleFile=true `
+    -p:IncludeNativeLibrariesForSelfExtract=true `
     -p:DebugType=None `
     -p:DebugSymbols=false
 
 if ($LASTEXITCODE -ne 0) {
     throw "Portable build failed with exit code $LASTEXITCODE."
+}
+
+dotnet publish (Join-Path $projectRoot 'PcSpaceMap.Service\PcSpaceMap.Service.csproj') `
+    --configuration Release `
+    --runtime win-x64 `
+    --self-contained true `
+    --output (Join-Path $outputFolder 'Service') `
+    -p:PublishSingleFile=true `
+    -p:EnableCompressionInSingleFile=true `
+    -p:IncludeNativeLibrariesForSelfExtract=false `
+    -p:DebugType=None `
+    -p:DebugSymbols=false
+
+if ($LASTEXITCODE -ne 0) {
+    throw "Index service build failed with exit code $LASTEXITCODE."
 }
 
 $executable = Join-Path $outputFolder 'PC Space Map.exe'

@@ -1,0 +1,45 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+    <Package Name="PC Space Map" Manufacturer="PC Maintenance Toolkit"
+             Version="$(ProductVersion)" ProductCode="$(ProductCode)"
+             UpgradeCode="17C37866-E869-4CDA-8D83-3BC4EC0F177A" Scope="perMachine">
+        <MajorUpgrade DowngradeErrorMessage="A newer version of PC Space Map is already installed." Schedule="afterInstallInitialize" />
+        <util:CloseApplication Id="CloseDesktopApp" Target="PC Space Map.exe"
+                               Condition="WIX_UPGRADE_DETECTED OR Installed"
+                               EndSessionMessage="yes"
+                               RebootPrompt="no" Timeout="12" />
+        <InstallExecuteSequence>
+            <Custom Action="override Wix4CloseApplications_X64" Before="InstallValidate" Condition="WIX_UPGRADE_DETECTED OR Installed" />
+        </InstallExecuteSequence>
+        <MediaTemplate EmbedCab="yes" />
+        <Icon Id="PcSpaceMapIcon" SourceFile="$(IconFile)" />
+        <Property Id="ARPPRODUCTICON" Value="PcSpaceMapIcon" />
+        <Feature Id="Main" Title="PC Space Map">
+            <ComponentRef Id="DesktopApp" />
+            <ComponentRef Id="ServiceApp" />
+            <ComponentRef Id="ServiceSqlite" />
+        </Feature>
+        <StandardDirectory Id="ProgramFiles64Folder">
+            <Directory Id="INSTALLFOLDER" Name="PC Space Map">
+                <Component Id="DesktopApp" Guid="*">
+                    <File Id="DesktopExe" Source="$(Payload)\PC Space Map.exe" KeyPath="yes">
+                        <Shortcut Id="StartMenuShortcut" Directory="ProgramMenuFolder" Name="PC Space Map"
+                                  Advertise="no" WorkingDirectory="INSTALLFOLDER" />
+                        <Shortcut Id="DesktopShortcut" Directory="DesktopFolder" Name="PC Space Map"
+                                  Advertise="no" WorkingDirectory="INSTALLFOLDER" />
+                    </File>
+                </Component>
+                <Directory Id="ServicePayload" Name="Service">
+                    <Component Id="ServiceApp" Guid="*">
+                        <File Source="$(Payload)\Service\PcSpaceMap.Service.exe" KeyPath="yes" />
+                    </Component>
+                    <Component Id="ServiceSqlite" Guid="*">
+                        <File Source="$(Payload)\Service\e_sqlite3.dll" KeyPath="yes" />
+                    </Component>
+                </Directory>
+            </Directory>
+        </StandardDirectory>
+        <StandardDirectory Id="ProgramMenuFolder" />
+        <StandardDirectory Id="DesktopFolder" />
+    </Package>
+</Wix>
