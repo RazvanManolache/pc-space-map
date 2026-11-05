@@ -58,7 +58,7 @@ public static class ServiceProtocol
         bool AutoStart = true, int MaxConcurrentScans = 1);
     public sealed record Response(bool Managed, long Snapshot = 0, Guid? Job = null, bool Running = false,
         string? Error = null, ScanProgress? Progress = null, int ProtocolVersion = Version, string? Volume = null,
-        bool SupportsFolderScans = false);
+        bool SupportsFolderScans = false, bool RecoveryPending = false);
 
     public static async Task<T> ReadAsync<T>(Stream stream, CancellationToken token)
     {

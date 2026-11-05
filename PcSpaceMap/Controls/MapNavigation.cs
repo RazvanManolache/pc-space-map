@@ -136,6 +136,7 @@ public partial class ScanWorkspaceControl
     {
         FilterSizeBox.Clear();
         FilterAgeBox.Clear();
+        FilterAgeEndBox.Clear();
         await ApplyMapFilterAsync();
     }
 
@@ -146,21 +147,44 @@ public partial class ScanWorkspaceControl
     {
         var name = _listNameFilter?.Name ?? "";
         var size = FilterSizeBox.Text.Trim();
-        var age = FilterAgeBox.Text.Trim();
         decimal mb = 0;
-        var days = 0;
-        if ((size.Length > 0 && (!decimal.TryParse(size, NumberStyles.Number, CultureInfo.CurrentCulture, out mb)
+        if (size.Length > 0 && (!decimal.TryParse(size, NumberStyles.Number, CultureInfo.CurrentCulture, out mb)
                 || mb < 0 || mb > long.MaxValue / 1048576m))
-            || (age.Length > 0 && (!int.TryParse(age, out days) || days < 0 || days > 365000)))
         {
-            FilterStatusText.Text = "Enter a valid size and age.";
+            FilterStatusText.Text = "Enter a valid size.";
             return false;
         }
-        DateTime? cutoff = days > 0 ? DateTime.UtcNow.AddDays(-days) : null;
-        var recent = FilterAgeModeBox.SelectedIndex == 0;
-        _mapFilter = name.Length == 0 && mb == 0 && cutoff is null ? null
-            : new FileFilter(name, (long)decimal.Ceiling(mb * 1048576m), recent ? null : cutoff, recent ? cutoff : null);
+        var between = FilterAgeModeBox.SelectedIndex == 2;
+        if (!TryAgeCutoffs(FilterAgeBox.Text.Trim(), between ? FilterAgeEndBox.Text.Trim() : null,
+                olderThan: FilterAgeModeBox.SelectedIndex == 1, out var before, out var since))
+        {
+            FilterStatusText.Text = between ? "Enter two different ages in whole days." : "Enter an age in whole days.";
+            return false;
+        }
+        _mapFilter = name.Length == 0 && mb == 0 && before is null && since is null ? null
+            : new FileFilter(name, (long)decimal.Ceiling(mb * 1048576m), before, since);
         await RefreshFilterAsync();
+        return true;
+    }
+
+    private static bool TryAgeCutoffs(string first, string? second, bool olderThan, out DateTime? before, out DateTime? since)
+    {
+        before = since = null;
+        if (first.Length == 0 && string.IsNullOrEmpty(second)) return true;
+        static bool ReadDays(string text, out int days) => int.TryParse(text, out days) && days is >= 0 and <= 365_000;
+        if (!ReadDays(first, out var start)) return false;
+        var now = DateTime.UtcNow;
+        if (second is not null)
+        {
+            if (!ReadDays(second, out var end) || start == end) return false;
+            before = now.AddDays(-Math.Min(start, end));
+            since = now.AddDays(-Math.Max(start, end));
+        }
+        else if (start > 0)
+        {
+            if (olderThan) before = now.AddDays(-start);
+            else since = now.AddDays(-start);
+        }
         return true;
     }
 

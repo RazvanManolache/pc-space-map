@@ -125,7 +125,7 @@ internal sealed class IndexWorker(ServiceProtocol.Settings settings, ILogger<Ind
                     var idForRequest = request.Job ?? Guid.NewGuid();
                     if (drive.Active is { Scope: null, Background: true, YieldRequested: false } active
                         && drive.Cancellation is { IsCancellationRequested: false }
-                        && drive.JournalRecovery is null
+                        && drive.Recovery.Reason is null
                         && (active.Action != "open" || settings.Live)
                         && (drive.Result is null || (scope is null && request.Operation == "update"))
                         && _scanSlots.TryPromote(active.Priority) && !active.YieldRequested)
@@ -161,9 +161,11 @@ internal sealed class IndexWorker(ServiceProtocol.Settings settings, ILogger<Ind
             }
             else return new(true, Error: "Unknown index operation.");
             var current = job?.Shared ?? job ?? drive.Active;
+            var recovery = job is null && current is null ? drive.Recovery.Status(now, settings.Live) : null;
             return new(true, job?.Snapshot ?? drive.Result?.SnapshotId ?? 0, job?.Id ?? current?.Id,
-                current is { CompletedAt: null }, job is not null ? job.Error : (current is null ? drive.JournalRecovery : null) ?? drive.Error,
-                current?.Progress, Volume: drive.Fingerprint, SupportsFolderScans: true);
+                current is { CompletedAt: null }, job is not null ? job.Error : recovery ?? drive.Error,
+                current?.Progress, Volume: drive.Fingerprint, SupportsFolderScans: true,
+                RecoveryPending: settings.Live && recovery is not null);
         }
     }
 
@@ -203,7 +205,18 @@ internal sealed class IndexWorker(ServiceProtocol.Settings settings, ILogger<Ind
                         var progress = new ProgressSink(p => PublishProgress(job, p));
                         if (job.Scope is not null && result is null)
                             throw new InvalidOperationException("Build the drive's first service index before refreshing an individual folder.");
-                        if ((action == "scan" && job.Scope is null) || (result is null && (action != "open" || settings.Live)))
+                        if (action == "recover")
+                        {
+                            string? reason;
+                            lock (_gate)
+                            {
+                                cancel.Token.ThrowIfCancellationRequested();
+                                drive.Recovery.RebuildStarted(Environment.TickCount64);
+                                reason = drive.Recovery.Reason;
+                            }
+                            result = await scanner.ScanAsync(drive.Root, progress, cancel.Token, reason + " Automatic index rebuild.");
+                        }
+                        else if ((action == "scan" && job.Scope is null) || (result is null && (action != "open" || settings.Live)))
                             result = await scanner.ScanAsync(drive.Root, progress, cancel.Token);
                         else if (result is not null && (job.Scope is not null || action == "update" || action == "open" && settings.Live))
                         {
@@ -212,16 +225,21 @@ internal sealed class IndexWorker(ServiceProtocol.Settings settings, ILogger<Ind
                             {
                                 cancel.Token.ThrowIfCancellationRequested();
                                 bool rebuild;
+                                bool automaticRebuild;
                                 lock (_gate)
                                 {
-                                    drive.JournalRecovery = "Saved index kept. Select Update changes or Scan now to rebuild. " + ex.Message;
+                                    var now = Environment.TickCount64;
+                                    drive.Recovery.JournalFailed(now, ex.Message, ex.NeedsRebuild, ex.JournalUnavailable);
                                     rebuild = !job.Background || drive.Jobs.Values.Any(request => ReferenceEquals(request.Shared, job));
-                                    if (!rebuild) job.Error = drive.JournalRecovery;
+                                    automaticRebuild = drive.Recovery.Rebuild;
+                                    if (!rebuild) job.Error = drive.Recovery.Status(now, settings.Live);
                                 }
                                 log.LogWarning(new EventId(2401, "JournalReplayFailed"),
                                     "NTFS journal replay failed for {Drive} at snapshot {Snapshot}. Reason: {Reason} {Outcome}",
                                     drive.Root, result.SnapshotId, ex.LogReason,
-                                    rebuild ? "A requested full scan is starting." : "Saved index kept. Automatic updates paused.");
+                                    rebuild ? "A requested full scan is starting." : "Saved index kept. " +
+                                        (!settings.Live ? "Live updates are off."
+                                            : automaticRebuild ? "Automatic rebuild scheduled." : "Journal retry scheduled."));
                                 if (rebuild)
                                     result = await scanner.ScanAsync(drive.Root, progress, cancel.Token, ex.Message + " Rebuilt the index on request.");
                             }
@@ -230,7 +248,7 @@ internal sealed class IndexWorker(ServiceProtocol.Settings settings, ILogger<Ind
                         lock (_gate)
                         {
                             drive.Result = result;
-                            if (job.Scope is null && job.Error is null && result is not null) drive.JournalRecovery = null;
+                            if (job.Scope is null && job.Error is null && result is not null) drive.Recovery.Succeeded();
                         }
                     }
                 }
@@ -249,7 +267,12 @@ internal sealed class IndexWorker(ServiceProtocol.Settings settings, ILogger<Ind
                 }
                 catch (Exception ex)
                 {
-                    lock (_gate) drive.Error = job.Error = ex.Message;
+                    lock (_gate)
+                    {
+                        drive.Error = job.Error = ex.Message;
+                        if (job.Scope is null && drive.Recovery.Reason is not null)
+                            drive.Recovery.AttemptFailed(Environment.TickCount64);
+                    }
                     log.LogWarning(ex, "Could not index {Root}.", drive.Root);
                 }
                 finally
@@ -341,7 +364,10 @@ internal sealed class IndexWorker(ServiceProtocol.Settings settings, ILogger<Ind
                     {
                         var now = Environment.TickCount64;
                         var cooldown = drive.Result?.ScanMethod == "Parallel directory scan" ? 30000 : 5000;
-                        if (drive.Cancellation is null && drive.JournalRecovery is null && drive.DirtyAt != 0 && now - drive.CompletedAt >= cooldown
+                        if (drive.Cancellation is not null) continue;
+                        if (drive.Recovery.IsDue(now))
+                            Start(drive, drive.Recovery.Rebuild ? "recover" : "update", token);
+                        else if (drive.Recovery.Reason is null && drive.DirtyAt != 0 && now - drive.CompletedAt >= cooldown
                             && (now - drive.DirtyAt >= 1800 || now - drive.FirstChangeAt >= 12000))
                             Start(drive, "update", token);
                     }
@@ -406,7 +432,7 @@ internal sealed class IndexWorker(ServiceProtocol.Settings settings, ILogger<Ind
         public readonly Queue<DriveJob> Pending = new();
         public readonly Dictionary<Guid, DriveJob> Jobs = [];
         public string? Error;
-        public string? JournalRecovery;
+        public DriveRecovery Recovery { get; } = new();
         public long DirtyAt, FirstChangeAt, CompletedAt;
     }
 

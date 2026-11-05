@@ -19,7 +19,7 @@ internal static class QueryChecks
         Write(Path.Combine(scope, "old.TMP"), 50);
         Write(Path.Combine(scope, "nested", "small.dat"), 30);
         Write(Path.Combine(sibling, "large.dat"), 900);
-        File.SetLastWriteTimeUtc(Path.Combine(sibling, "large.dat"), DateTime.UtcNow.AddDays(-1));
+        File.SetLastWriteTimeUtc(Path.Combine(sibling, "large.dat"), DateTime.UtcNow.AddDays(-7));
         var database = Path.Combine(suite, "query-fixture.sqlite");
         var result = await new DiskScanner { DatabasePath = database, PreferNtfs = false }.ScanAsync(root, null, default);
         var inventory = result.Inventory!;
@@ -48,7 +48,8 @@ internal static class QueryChecks
         {
             var store = view.Inventory!;
             var scan = view.SnapshotId;
-            var cutoff = DateTime.UtcNow.AddDays(-3);
+            var now = DateTime.UtcNow;
+            var cutoff = now.AddDays(-10);
             var recent = new FileFilter("*.dat", 100, null, cutoff);
             var older = new FileFilter("*.dat", 0, cutoff);
             check(store.Largest(scan, root, filter: recent).Single().Name == "large.dat"
@@ -56,6 +57,12 @@ internal static class QueryChecks
                 && store.Largest(scan, root, filter: older).Single().Name == "small.dat",
                 "largest-file filtering combines modification direction, size, name and subtree scope");
             var pattern = new FileFilter("*.DAT", 0, null);
+            var interval = pattern with { ModifiedBefore = now.AddDays(-5), ModifiedSince = cutoff };
+            check(store.SearchNames(scan, root, interval, 0, 10, default).Single().Name == "large.dat"
+                && store.SearchNames(scan, root, interval with { Name = "" }, 0, 10, default).Single().Name == "large.dat"
+                && store.Largest(scan, root, filter: interval).Single().Name == "large.dat"
+                && store.SearchNames(scan, root, interval, 1, 10, default).Count == 0,
+                "bounded date ranges work with or without a name filter and apply before paging");
             var firstPage = store.SearchNames(scan, root, pattern, 0, 1, default);
             var secondPage = store.SearchNames(scan, root, pattern, 1, 1, default);
             var scoped = store.SearchNames(scan, equivalentCase, pattern, 0, 10, default);

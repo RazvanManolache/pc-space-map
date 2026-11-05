@@ -8,5 +8,6 @@
   <ItemGroup><ProjectReference Include="../PcSpaceMap.Index/PcSpaceMap.Index.csproj" /></ItemGroup>
   <ItemGroup>
     <Compile Include="../PcSpaceMap.Service/DiskScanSlots.cs" Link="DiskScanSlots.cs" />
+    <Compile Include="../PcSpaceMap.Service/DriveRecovery.cs" Link="DriveRecovery.cs" />
   </ItemGroup>
 </Project>

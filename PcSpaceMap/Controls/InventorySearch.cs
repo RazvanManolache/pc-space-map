@@ -10,7 +10,7 @@ public partial class ScanWorkspaceControl
 {
     private const int SearchPageSize = 200;
     private FileFilter? _listNameFilter;
-    private FileFilter? _searchName;
+    private FileFilter? _searchFilter;
     private ScanResult? _searchInventory;
     private int _searchOffset;
     private CancellationTokenSource? _searchCancellation;
@@ -29,7 +29,7 @@ public partial class ScanWorkspaceControl
     private void MainTabs_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (!_optionsReady || !ReferenceEquals(e.OriginalSource, MainTabs) || !ReferenceEquals(MainTabs.SelectedItem, SearchTab)) return;
-        if (_searchInventory != _result && _searchName is not null) _ = RunSearchAsync(0);
+        if (_searchInventory != _result && _searchFilter is not null) _ = RunSearchAsync(0);
     }
 
     private async void Search_Click(object sender, RoutedEventArgs e) => await StartSearchAsync();
@@ -43,7 +43,14 @@ public partial class ScanWorkspaceControl
 
     private Task StartSearchAsync()
     {
-        _searchName = ToNameFilter(SearchNameBox.Text);
+        if (!TryAgeCutoffs(SearchAgeStartBox.Text.Trim(), SearchAgeEndBox.Text.Trim(), olderThan: false,
+                out var before, out var since))
+        {
+            SearchStatusText.Text = "Enter two different ages in whole days, or leave both blank.";
+            return Task.CompletedTask;
+        }
+        var name = SearchNameBox.Text.Trim();
+        _searchFilter = name.Length == 0 && before is null ? null : new FileFilter(name, 0, before, since);
         return RunSearchAsync(0);
     }
 
@@ -63,9 +70,9 @@ public partial class ScanWorkspaceControl
             SearchStatusText.Text = "Scan a drive or open a saved inventory to search.";
             return;
         }
-        if (_searchName is not { } filter)
+        if (_searchFilter is not { } filter)
         {
-            SearchStatusText.Text = "Enter part of a file or folder name, or a wildcard such as *.zip.";
+            SearchStatusText.Text = "Enter a name, wildcard such as *.zip, or a modification range.";
             return;
         }
 

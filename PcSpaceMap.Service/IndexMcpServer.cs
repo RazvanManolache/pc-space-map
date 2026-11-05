@@ -122,7 +122,7 @@ internal static class IndexMcpServer
         foreach (var drive in settings.Volumes.Keys.Where(ServiceProtocol.IsDriveRoot).Order())
         {
             var status = await GetStatusAsync(drive, token);
-            drives.Add(new { drive, status.Managed, status.Snapshot, status.Running, phase = status.Progress?.Phase, status.Error });
+            drives.Add(new { drive, status.Managed, status.Snapshot, status.Running, status.RecoveryPending, phase = status.Progress?.Phase, status.Error });
         }
         return new { liveMonitoring = settings.Live, drives };
     }

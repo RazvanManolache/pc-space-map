@@ -375,14 +375,15 @@ public sealed class InventoryStore
     public IReadOnlyList<ScanNode> SearchNames(long scan, string under, FileFilter nameFilter, int offset, int limit, CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
-        if (nameFilter.Name.Length == 0 || limit <= 0 || offset < 0) return [];
+        if (nameFilter is { Name.Length: 0, ModifiedBefore: null, ModifiedSince: null } || limit <= 0 || offset < 0) return [];
         if (_compact is not null) return _compact.SearchNames(scan, under, nameFilter, offset, limit, token);
         using var connection = Open();
         var range = SubtreeRange(under);
-        var condition = NameFilterCondition(connection, nameFilter, "name");
+        var condition = NameFilterCondition(connection, nameFilter, "name") + ModificationFilterCondition(nameFilter, "modified");
         using var command = Command(connection,
             $"SELECT {Columns} FROM entries WHERE scan=$id AND path>$prefix AND path<$end{condition} ORDER BY path LIMIT $limit OFFSET $offset",
-            ("$id", scan), ("$prefix", range.Prefix), ("$end", range.End), ("$limit", limit), ("$offset", offset));
+            ("$id", scan), ("$prefix", range.Prefix), ("$end", range.End), ("$limit", limit), ("$offset", offset),
+            ("$before", nameFilter.ModifiedBefore?.Ticks ?? 0), ("$since", nameFilter.ModifiedSince?.Ticks ?? 0));
         ObserveQueryCancellation(connection, token);
         return ReadNodes(command, reader => Node(reader, scan), token);
     }
@@ -425,11 +426,13 @@ public sealed class InventoryStore
     internal static string FileFilterCondition(SqliteConnection connection, FileFilter? filter, string size, string modified, string name)
     {
         if (filter is null) return "";
-        return $" AND {size}>=$minBytes"
-            + (filter.ModifiedBefore.HasValue ? $" AND {modified}>0 AND {modified}<=$before" : "")
-            + (filter.ModifiedSince.HasValue ? $" AND {modified}>0 AND {modified}>=$since" : "")
+        return $" AND {size}>=$minBytes" + ModificationFilterCondition(filter, modified)
             + NameFilterCondition(connection, filter, name);
     }
+
+    internal static string ModificationFilterCondition(FileFilter filter, string modified) =>
+        (filter.ModifiedBefore.HasValue ? $" AND {modified}>0 AND {modified}<=$before" : "")
+        + (filter.ModifiedSince.HasValue ? $" AND {modified}>0 AND {modified}>=$since" : "");
 
     internal static string NameFilterCondition(SqliteConnection connection, FileFilter? filter, string name)
     {

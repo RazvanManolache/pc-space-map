@@ -102,6 +102,7 @@ internal static class NtfsBatchChecks
                 check((await batched.LoadSavedAsync(root))!.SnapshotId == again.SnapshotId,
                     "a scoped refresh cannot import a junction target or replace the saved scan");
             }
+            await CheckJournalFolderRecovery(suite, target, check);
             using var cancel = new CancellationTokenSource();
             try
             {
@@ -112,6 +113,50 @@ internal static class NtfsBatchChecks
             {
                 check((await batched.LoadSavedAsync(root))!.SnapshotId == again.SnapshotId,
                     "NTFS batch cancellation stops workers and preserves the completed snapshot");
+            }
+        }
+        finally { Directory.Delete(junction); }
+    }
+
+    private static async Task CheckJournalFolderRecovery(string suite, string outside, Action<bool, string> check)
+    {
+        var root = Path.Combine(suite, "journal-folder-recovery");
+        var affected = Path.Combine(root, "affected");
+        Directory.CreateDirectory(affected);
+        var file = Path.Combine(affected, "example.dat");
+        var junction = Path.Combine(affected, "redirected");
+        File.WriteAllBytes(file, new byte[10]);
+        Junction(junction, outside);
+        try
+        {
+            static string Identity(string path) => WindowsVolume.ReadEntry(path).Identity!;
+            static ulong Id(string path) => Convert.ToUInt64(Identity(path).Split(':')[1], 16);
+            var serial = Identity(root).Split(':')[0];
+            var journal = new TestJournal { Head = new(Path.GetPathRoot(root)!, serial, 1, 10, 0) };
+            var scanner = new DiskScanner { DatabasePath = Path.Combine(suite, "journal-folder.sqlite"), Journal = journal,
+                PreferNtfs = false, RequireJournalForDriveRefresh = true };
+            var before = await scanner.ScanAsync(root, null, default);
+            File.WriteAllBytes(file, new byte[70]);
+            File.WriteAllBytes(Path.Combine(root, "unrelated.dat"), new byte[100]);
+            journal.Head = journal.Head with { NextUsn = 20 };
+            var fileId = Id(file);
+            journal.Events = [new(fileId, Id(affected), 1, Path.GetFileName(file))];
+            journal.Paths[fileId] = Path.Combine(junction, "nested", "outside.dat");
+            var after = await scanner.RefreshAsync(before, null, null, default);
+            check(after.ScanMethod == "NTFS journal update" && after.Root.Size == 70 && before.Root.Size == 10
+                && after.Issues.Any(issue => issue.Path == affected && issue.Message.StartsWith("Refreshed this folder")),
+                "a journal entry through a junction refreshes only its verified ancestor and preserves the previous snapshot");
+            journal.Head = journal.Head with { NextUsn = 30 };
+            journal.Events = [journal.Events[0] with { Reason = 0x00010000 }];
+            try
+            {
+                await scanner.RefreshAsync(after, null, null, default);
+                check(false, "a local rescan cannot resolve an unverified hard-link change");
+            }
+            catch (JournalRefreshException)
+            {
+                check((await scanner.LoadSavedAsync(root))!.SnapshotId == after.SnapshotId,
+                    "an unverified hard-link change retains the previous snapshot for broader recovery");
             }
         }
         finally { Directory.Delete(junction); }

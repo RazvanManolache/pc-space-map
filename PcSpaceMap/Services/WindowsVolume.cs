@@ -439,7 +439,7 @@ internal static class WindowsVolume
     public static IReadOnlyList<VolumeChange> Changes(JournalCursor saved, JournalCursor head, CancellationToken token)
     {
         if (saved.VolumeIdentity != head.VolumeIdentity || saved.JournalId != head.JournalId || saved.NextUsn < head.FirstUsn || saved.NextUsn > head.NextUsn)
-            throw new IOException("The NTFS journal was replaced or wrapped; a full scan is required.");
+            throw new JournalReplayGapException("The NTFS journal was replaced or wrapped; a full scan is required.");
         using var handle = OpenVolume(saved.Volume);
         var input = new byte[40];
         BitConverter.GetBytes(saved.NextUsn).CopyTo(input, 0);
@@ -452,8 +452,14 @@ internal static class WindowsVolume
             token.ThrowIfCancellationRequested();
             if (!DeviceIoControl(handle, ReadJournal, input, input.Length, buffer, buffer.Length, out var size, IntPtr.Zero)) throw new Win32Exception();
             if (size < 8) throw new IOException("Invalid NTFS journal response.");
-            foreach (var item in Parse(buffer, size, true)) changes[(item.FileId, item.ParentId, item.Name)] = item;
-            if (changes.Count > 100_000) throw new IOException("Many files changed; a full scan is required.");
+            foreach (var item in Parse(buffer, size, true))
+            {
+                var key = (item.FileId, item.ParentId, item.Name);
+                changes[key] = changes.TryGetValue(key, out var earlier) && (item.Reason | earlier.Reason) != item.Reason
+                    ? item with { Reason = item.Reason | earlier.Reason }
+                    : item;
+            }
+            if (changes.Count > 100_000) throw new JournalReplayGapException("Many files changed; a full scan is required.");
             var next = BitConverter.ToInt64(buffer, 0);
             if (next <= BitConverter.ToInt64(input, 0)) throw new IOException("NTFS journal did not advance.");
             BitConverter.GetBytes(next).CopyTo(input, 0);

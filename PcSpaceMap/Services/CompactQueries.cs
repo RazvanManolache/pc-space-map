@@ -116,13 +116,15 @@ internal sealed partial class CompactInventory
         var range = InventoryStore.SubtreeRange(under);
         var global = range.Path.Equals(_owner.RootPath, StringComparison.OrdinalIgnoreCase);
         var scope = global ? " AND v.node<>$root" : " AND v.parent IN (SELECT node FROM c_directories WHERE path=$path OR (path>$prefix AND path<$end))";
-        var condition = InventoryStore.NameFilterCondition(connection, nameFilter, Name);
+        var condition = InventoryStore.NameFilterCondition(connection, nameFilter, Name)
+            + InventoryStore.ModificationFilterCondition(nameFilter, "v.modified");
         using var command = InventoryStore.Command(connection, $"""
             SELECT {Projection} FROM c_versions v {(current ? "INDEXED BY " + (global ? "cv_current" : "cv_parent") : "")}{JoinsAt(scan, current)}
             WHERE {At(scan, current)} AND v.skipped=0{scope}{condition}
             ORDER BY v.node LIMIT $limit OFFSET $offset
             """, ("$root", global ? Lookup(connection, _owner.RootPath) : null), ("$path", range.Path), ("$prefix", range.Prefix),
-            ("$end", range.End), ("$limit", limit), ("$offset", offset));
+            ("$end", range.End), ("$limit", limit), ("$offset", offset),
+            ("$before", nameFilter.ModifiedBefore?.Ticks ?? 0), ("$since", nameFilter.ModifiedSince?.Ticks ?? 0));
         InventoryStore.ObserveQueryCancellation(connection, token);
         return InventoryStore.ReadNodes(command, reader => _owner.Node(reader, scan), token);
     }

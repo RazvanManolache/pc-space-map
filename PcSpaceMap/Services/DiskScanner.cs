@@ -176,6 +176,7 @@ public sealed class DiskScanner
         store.SetReaderSelection(selection);
         FinishPhase("Reader selection");
         var scopes = new List<string>();
+        var recoveryFolders = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var method = "Parallel directory scan";
         var notes = new ConcurrentQueue<ScanIssue>();
         if (initialNote is not null) notes.Enqueue(new() { Path = root, Message = initialNote });
@@ -190,7 +191,7 @@ public sealed class DiskScanner
         {
             try
             {
-                scopes = ChangedPaths(store, basis.Value, saved, head, token);
+                scopes = ChangedPaths(store, basis.Value, saved, head, recoveryFolders, token);
                 copied = true;
                 method = "NTFS journal update";
             }
@@ -203,7 +204,8 @@ public sealed class DiskScanner
         else if (incremental)
         {
             const string message = "Change journal access unavailable.";
-            if (RequireJournalForDriveRefresh) throw new JournalRefreshException(message, logReason: message);
+            if (RequireJournalForDriveRefresh) throw new JournalRefreshException(message, logReason: message,
+                needsRebuild: head is not null, journalUnavailable: head is null);
             notes.Enqueue(new() { Path = root, Message = message + " Running a full scan." });
         }
         if (!copied) scopes = [root];
@@ -230,10 +232,12 @@ public sealed class DiskScanner
                             if (saved is null || head is null)
                             {
                                 const string message = "Change journal access unavailable.";
-                                if (RequireJournalForDriveRefresh) throw new JournalRefreshException(message, logReason: message);
+                                if (RequireJournalForDriveRefresh) throw new JournalRefreshException(message, logReason: message,
+                                    needsRebuild: head is not null, journalUnavailable: head is null);
                                 throw new IOException(message);
                             }
-                            scopes = ChangedPaths(store, basis!.Value, saved, head, token);
+                            recoveryFolders.Clear();
+                            scopes = ChangedPaths(store, basis!.Value, saved, head, recoveryFolders, token);
                         }
                         catch (Exception ex) when (ex is (IOException or System.ComponentModel.Win32Exception) and not JournalRefreshException)
                         {
@@ -245,6 +249,20 @@ public sealed class DiskScanner
             }
             var minimal = MinimizeScopes(scopes.Where(path => !Excluded(path)).Select(path =>
                 copied ? PromoteScope(store, connection, basis!.Value, path) : path), token);
+            var strictScopes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (copied && recoveryFolders.Count > 0)
+            {
+                var selected = minimal.ToHashSet(StringComparer.OrdinalIgnoreCase);
+                foreach (var recovery in recoveryFolders)
+                {
+                    for (var path = recovery; path is not null; path = Path.GetDirectoryName(path))
+                    {
+                        if (!selected.Contains(path)) continue;
+                        strictScopes.Add(path);
+                        break;
+                    }
+                }
+            }
             id = store.Begin(connection, copied ? basis : null);
             if (copied)
             {
@@ -319,12 +337,26 @@ public sealed class DiskScanner
                 if (copied && minimal.Count > 1) Phase("Refreshing changed paths", minimal.Count);
                 foreach (var scope in minimal)
                 {
+                    var recovering = strictScopes.Contains(scope);
+                    var scopeNotes = recovering ? new ConcurrentQueue<ScanIssue>() : notes;
                     try
                     {
                         var entry = WindowsVolume.ReadEntry(scope, verifyPath: copied || !scope.StartsWith(@"\\"), requiredSerial: RequiredVolumeSerial);
                         if (entry.IsDirectory && (entry.Attributes & FileAttributes.ReparsePoint) == 0)
-                            Walk(entry, Consume, notes, token, Excluded, readers);
+                            Walk(entry, Consume, scopeNotes, token, Excluded, readers);
+                        else if (recovering)
+                            throw new IOException("The recovery folder changed during the refresh.");
                         else Consume(entry);
+                        if (recovering)
+                        {
+                            if (scopeNotes.TryPeek(out var issue))
+                                throw new IOException("A recovery folder could not be read completely. " + issue.Message);
+                            notes.Enqueue(new() { Path = scope, Message = "Refreshed this folder after a journal entry could not be verified." });
+                        }
+                    }
+                    catch (Exception ex) when (recovering && Expected(ex))
+                    {
+                        throw new JournalRefreshException(ex.Message, ex, "A recovery folder could not be verified or read completely.");
                     }
                     catch (FileNotFoundException ex)
                     {
@@ -526,8 +558,10 @@ public sealed class DiskScanner
         catch (Exception ex) when (Expected(ex)) { issue(new() { Path = entry.Path, Message = "Hard-link aliases are incomplete: " + ex.Message }); }
     }
 
-    private List<string> ChangedPaths(InventoryStore store, long basis, JournalCursor saved, JournalCursor head, CancellationToken token)
+    private List<string> ChangedPaths(InventoryStore store, long basis, JournalCursor saved, JournalCursor head,
+        HashSet<string> recoveryFolders, CancellationToken token)
     {
+        const uint hardLinkChange = 0x00010000;
         var paths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var pendingDeletes = Path.Combine(head.Volume, "$Extend", "$Deleted");
         var pendingDeletePrefix = pendingDeletes + Path.DirectorySeparatorChar;
@@ -537,7 +571,7 @@ public sealed class DiskScanner
         catch (Exception ex) when (RequireJournalForDriveRefresh && ex is (IOException or System.ComponentModel.Win32Exception))
         {
             // Journal-reader errors describe the stream or checkpoint without naming a file.
-            throw new JournalRefreshException(ex.Message, ex, ex.Message);
+            throw new JournalRefreshException(ex.Message, ex, ex.Message, needsRebuild: ex is JournalReplayGapException);
         }
         foreach (var change in changes)
         {
@@ -556,18 +590,42 @@ public sealed class DiskScanner
                 && !current.Equals(pendingDeletes, StringComparison.OrdinalIgnoreCase)
                 && IsBelow(current, store.RootPath) && !current.Equals(store.RootPath, StringComparison.OrdinalIgnoreCase))
             {
-                paths.Add(current);
+                InventoryEntry? info = null;
                 try
                 {
-                    var info = WindowsVolume.ReadEntry(current, verifyPath: true, requiredSerial: RequiredVolumeSerial);
-                    if (!info.IsDirectory && info.HardLinks > 1)
-                        foreach (var alias in WindowsVolume.HardLinkPaths(current)) if (IsBelow(alias, store.RootPath)) paths.Add(alias);
+                    info = WindowsVolume.ReadEntry(current, verifyPath: true, requiredSerial: RequiredVolumeSerial);
                 }
                 catch (FileNotFoundException) { }
+                catch (IOException) when ((change.Reason & hardLinkChange) == 0)
+                {
+                    // A hard-link change can affect other folders. Handle it through the normal recovery policy.
+                    var recovery = FindRecoveryFolder(current, store.RootPath);
+                    if (recovery is null) throw;
+                    paths.Add(recovery);
+                    recoveryFolders.Add(recovery);
+                }
+                paths.Add(current);
+                if (info is { IsDirectory: false, HardLinks: > 1 })
+                    foreach (var alias in WindowsVolume.HardLinkPaths(current)) if (IsBelow(alias, store.RootPath)) paths.Add(alias);
             }
             foreach (var alias in store.IdentityPaths(connection, basis, saved.VolumeIdentity + ":" + change.FileId.ToString("X16"), false)) paths.Add(alias);
         }
         return paths.ToList();
+    }
+
+    private string? FindRecoveryFolder(string path, string root)
+    {
+        for (var folder = Path.GetDirectoryName(path); folder is not null && IsBelow(folder, root)
+            && !folder.Equals(root, StringComparison.OrdinalIgnoreCase); folder = Path.GetDirectoryName(folder))
+        {
+            try
+            {
+                var entry = WindowsVolume.ReadEntry(folder, verifyPath: true, requiredSerial: RequiredVolumeSerial);
+                if (entry.IsDirectory && (entry.Attributes & FileAttributes.ReparsePoint) == 0) return folder;
+            }
+            catch (Exception ex) when (Expected(ex)) { }
+        }
+        return null;
     }
 
     private void VerifyScopeAncestors(string scope, string root)
@@ -617,7 +675,12 @@ public sealed class DiskScanner
     private static bool Expected(Exception ex) => ex is IOException or UnauthorizedAccessException or System.Security.SecurityException;
 }
 
-internal sealed class JournalRefreshException(string message, Exception? inner = null, string? logReason = null) : IOException(message, inner)
+internal sealed class JournalRefreshException(string message, Exception? inner = null, string? logReason = null,
+    bool needsRebuild = false, bool journalUnavailable = false) : IOException(message, inner)
 {
     internal string LogReason { get; } = logReason ?? "Could not verify a changed entry or its hard links.";
+    internal bool NeedsRebuild { get; } = needsRebuild;
+    internal bool JournalUnavailable { get; } = journalUnavailable;
 }
+
+internal sealed class JournalReplayGapException(string message) : IOException(message);

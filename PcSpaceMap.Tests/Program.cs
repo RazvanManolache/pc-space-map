@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using PcSpaceMap.Service;
 using PcSpaceMap.Services;
 
 if (args.Length >= 2 && args[0] == "--benchmark-compact")
@@ -241,10 +242,28 @@ try
     }
     catch (JournalRefreshException ex)
     {
-        Check(ex.LogReason == "Simulated journal wrap" && noChanges.Inventory!.LatestId() == noChanges.SnapshotId
+        Check(ex.LogReason == "Simulated journal wrap" && ex.NeedsRebuild && noChanges.Inventory!.LatestId() == noChanges.SnapshotId
             && !automaticPhases.Contains("Enumerating NTFS names"),
             "journal-only refresh leaves the saved snapshot intact when the journal cannot be replayed");
     }
+    var recovery = new DriveRecovery();
+    recovery.JournalFailed(0, "Changed entry could not be verified.", needsRebuild: false, journalUnavailable: false);
+    Check(!recovery.Rebuild && !recovery.IsDue(29_999) && recovery.IsDue(30_000),
+        "a verification failure schedules a journal retry before a rebuild");
+    recovery.JournalFailed(30_000, "Changed entry could not be verified.", needsRebuild: false, journalUnavailable: false);
+    Check(recovery.Rebuild && !recovery.IsDue(59_999) && recovery.IsDue(60_000),
+        "a second verification failure schedules a background rebuild");
+    recovery.RebuildStarted(60_000);
+    recovery.Succeeded();
+    Check(recovery.Reason is null && !recovery.IsDue(long.MaxValue), "a completed rebuild restores normal live updates");
+    recovery.JournalFailed(90_000, "Journal wrapped.", needsRebuild: true, journalUnavailable: false);
+    Check(recovery.Rebuild && !recovery.IsDue(3_659_999) && recovery.IsDue(3_660_000),
+        "a journal gap schedules a rebuild but respects the per-drive cooldown after success");
+    var unavailable = new DriveRecovery();
+    unavailable.JournalFailed(0, "Journal unavailable.", needsRebuild: false, journalUnavailable: true);
+    unavailable.JournalFailed(120_000, "Journal unavailable.", needsRebuild: false, journalUnavailable: true);
+    Check(!unavailable.Rebuild && !unavailable.IsDue(239_999) && unavailable.IsDue(240_000),
+        "an unavailable journal gets a slower retry without forcing a full scan");
     var recovered = await journalScanner.RefreshAsync(noChanges, null, null, default);
     Check(recovered.Root.Size == 170 && recovered.ScanMethod == "Parallel directory scan" && recovered.Issues.Any(), "lost journal falls back to a complete inventory");
     Check(recovered.Timings.Any(x => x.Phase == "Folder totals and hard links") && (await journalScanner.LoadSavedAsync(journalRoot))!.Timings.Count > 0, "phase timings are returned and saved");
@@ -320,6 +339,6 @@ sealed class TestJournal : IVolumeJournal
     public bool Fail { get; set; }
     public JournalCursor? Cursor(string root) => Head;
     public IReadOnlyList<VolumeChange> Changes(JournalCursor saved, JournalCursor head, CancellationToken token) =>
-        Fail ? throw new IOException("Simulated journal wrap") : Events;
+        Fail ? throw new JournalReplayGapException("Simulated journal wrap") : Events;
     public string? ResolveId(string volume, ulong fileId) => Paths.GetValueOrDefault(fileId);
 }

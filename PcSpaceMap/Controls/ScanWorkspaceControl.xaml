@@ -102,16 +102,43 @@
                                 <TextBlock Text="Min. MiB" VerticalAlignment="Center" Margin="6,0,5,0"/>
                                 <TextBox x:Name="FilterSizeBox" Width="42" VerticalContentAlignment="Center"
                                          AutomationProperties.Name="Minimum file size in MiB" KeyDown="FilterBox_KeyDown"/>
-                                <ComboBox x:Name="FilterAgeModeBox" Width="144" SelectedIndex="0" Margin="5,0"
+                                <ComboBox x:Name="FilterAgeModeBox" Width="166" SelectedIndex="0" Margin="5,0"
                                           AutomationProperties.Name="File modification age comparison">
                                     <ComboBoxItem Content="Modified within"/>
                                     <ComboBoxItem Content="Older than"/>
+                                    <ComboBoxItem Content="Modified between"/>
                                 </ComboBox>
                                 <TextBox x:Name="FilterAgeBox" Width="36" VerticalContentAlignment="Center"
                                          AutomationProperties.Name="Days since modification"
                                          ToolTip="Enter the number of days. Modified within 3 days shows files last modified in the past 72 hours."
                                          KeyDown="FilterBox_KeyDown"/>
-                                <TextBlock Text="days" VerticalAlignment="Center" Margin="5,0"/>
+                                <StackPanel Orientation="Horizontal">
+                                    <StackPanel.Style>
+                                        <Style TargetType="StackPanel">
+                                            <Setter Property="Visibility" Value="Collapsed"/>
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding SelectedIndex, ElementName=FilterAgeModeBox}" Value="2">
+                                                    <Setter Property="Visibility" Value="Visible"/>
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </StackPanel.Style>
+                                    <TextBlock Text="and" VerticalAlignment="Center" Margin="5,0"/>
+                                    <TextBox x:Name="FilterAgeEndBox" Width="40" VerticalContentAlignment="Center"
+                                             AutomationProperties.Name="Second age in days" KeyDown="FilterBox_KeyDown"/>
+                                </StackPanel>
+                                <TextBlock VerticalAlignment="Center" Margin="5,0">
+                                    <TextBlock.Style>
+                                        <Style TargetType="TextBlock">
+                                            <Setter Property="Text" Value="days"/>
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding SelectedIndex, ElementName=FilterAgeModeBox}" Value="2">
+                                                    <Setter Property="Text" Value="days ago"/>
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBlock.Style>
+                                </TextBlock>
                             </StackPanel>
                             <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center" Margin="0,0,6,0">
                                 <Button Content="Apply" ToolTip="Apply size and age filters" Click="ApplyFilter_Click"/>
@@ -172,17 +199,28 @@
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
-                    <DockPanel LastChildFill="True">
-                        <Label Target="{Binding ElementName=SearchNameBox}" Content="File or folder name" Foreground="{StaticResource PrimaryText}"
-                               VerticalAlignment="Center" Padding="0,0,8,0"/>
-                        <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Margin="5,0,0,0">
-                            <Button Content="Search" Style="{StaticResource PrimaryButton}" Click="Search_Click"/>
-                            <Button Content="Filter other lists" Click="UseSearchFilter_Click"/>
+                    <StackPanel>
+                        <DockPanel LastChildFill="True">
+                            <Label Target="{Binding ElementName=SearchNameBox}" Content="File or folder name" Foreground="{StaticResource PrimaryText}"
+                                   VerticalAlignment="Center" Padding="0,0,8,0"/>
+                            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Margin="5,0,0,0">
+                                <Button Content="Search" Style="{StaticResource PrimaryButton}" Click="Search_Click"/>
+                                <Button Content="Filter other lists" ToolTip="Apply the search name to the other lists" Click="UseSearchFilter_Click"/>
+                            </StackPanel>
+                            <TextBox x:Name="SearchNameBox" VerticalContentAlignment="Center" AutomationProperties.Name="Search file or folder names"
+                                     ToolTip="Search the entire inventory in this tab. Use a partial name or a wildcard such as *.zip."
+                                     KeyDown="SearchName_KeyDown"/>
+                        </DockPanel>
+                        <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                            <TextBlock Text="Modified between" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                            <TextBox x:Name="SearchAgeStartBox" Width="54" VerticalContentAlignment="Center"
+                                     AutomationProperties.Name="First age in days" KeyDown="SearchName_KeyDown"/>
+                            <TextBlock Text="and" VerticalAlignment="Center" Margin="6,0"/>
+                            <TextBox x:Name="SearchAgeEndBox" Width="54" VerticalContentAlignment="Center"
+                                     AutomationProperties.Name="Second age in days" KeyDown="SearchName_KeyDown"/>
+                            <TextBlock Text="days ago (optional)" Foreground="{StaticResource SecondaryText}" VerticalAlignment="Center" Margin="6,0"/>
                         </StackPanel>
-                        <TextBox x:Name="SearchNameBox" VerticalContentAlignment="Center" AutomationProperties.Name="Search file or folder names"
-                                 ToolTip="Search the entire inventory in this tab. Use a partial name or a wildcard such as *.zip."
-                                 KeyDown="SearchName_KeyDown"/>
-                    </DockPanel>
+                    </StackPanel>
                     <TextBlock Grid.Row="1" x:Name="SearchStatusText" Foreground="{StaticResource SecondaryText}"
                                Margin="4,8,4,8" TextWrapping="Wrap" Text="Search files and folders in this tab’s inventory."/>
                     <DataGrid Grid.Row="2" x:Name="SearchResultsGrid" AutoGenerateColumns="False"
