@@ -35,6 +35,9 @@
             <TextBlock Text="PC Space Map" FontSize="18" FontWeight="SemiBold" Foreground="{StaticResource Accent}"
                        VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
             <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                <Button x:Name="ReleaseUpdateButton" Visibility="Collapsed" Style="{StaticResource PrimaryButton}"
+                        Margin="0,0,6,0" Padding="8,4" VerticalAlignment="Center" Click="ReleaseUpdate_Click"
+                        ToolTip="Open the latest PC Space Map release on GitHub"/>
                 <Border Background="#102236" BorderBrush="#1F5267" BorderThickness="1" CornerRadius="5"
                         Padding="7,3" Margin="0,0,6,0" VerticalAlignment="Center">
                     <TextBlock Text="READ-ONLY SCANNER" Foreground="#67E8F9" FontSize="10" FontWeight="Bold"

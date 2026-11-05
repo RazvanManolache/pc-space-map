@@ -4,7 +4,7 @@ PC Space Map is a read-only Windows disk inventory app inspired by tools like Sp
 
 Download the [Windows x64 installer from GitHub Releases](https://github.com/RazvanManolache/pc-space-map/releases/latest). The installer includes the desktop app and an optional Windows indexing service.
 
-## What's new in 2.4.8
+## Features in 2.4.9
 
 | Feature | Why it helps |
 | --- | --- |
@@ -17,6 +17,7 @@ Download the [Windows x64 installer from GitHub Releases](https://github.com/Raz
 | Snapshot comparison and disk accounting | See which files grew, shrank, appeared, or disappeared. Compare logical size with allocated space and account for repeated hard links. |
 | Installer, tray, and startup controls | Install Start menu and desktop shortcuts, choose how the app starts at sign-in, and manage the optional service from the app. |
 | Read-only MCP access | An AI client can query completed service indexes while the desktop app is closed, using the Windows account authorized for that index. |
+| GitHub release indicator | The desktop app checks GitHub at startup and every six hours. When a newer release is available, select **Update available** in the header to open the latest release page. |
 
 ## Screenshots
 

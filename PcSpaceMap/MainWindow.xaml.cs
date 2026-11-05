@@ -49,6 +49,7 @@ public partial class MainWindow : Window
     private async void MainWindow_Loaded(object sender, RoutedEventArgs e)
     {
         StartServiceFooter();
+        StartReleaseChecks();
         if (_agentServer is not null) return;
         try
         {
@@ -83,6 +84,7 @@ public partial class MainWindow : Window
     private void MainWindow_Closed(object? sender, EventArgs e)
     {
         StopServiceFooter();
+        StopReleaseChecks();
         DisposeTray();
         foreach (var tab in DiskTabs.Items.OfType<TabItem>())
             if (tab.Content is ScanWorkspaceControl workspace) workspace.CloseWorkspace();
