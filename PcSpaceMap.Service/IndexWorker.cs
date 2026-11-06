@@ -192,7 +192,7 @@ internal sealed class IndexWorker(ServiceProtocol.Settings settings, ILogger<Ind
                             DatabasePath = ServiceProtocol.DatabasePath(_directory, drive.Root, drive.Fingerprint),
                             ExcludedDirectory = _directory,
                             RequireJournalForDriveRefresh = true,
-                            HistoryGrace = TimeSpan.FromMinutes(10),
+                            HistoryGrace = ServiceProtocol.SnapshotHistoryGrace,
                             Parallelism = Math.Clamp(Environment.ProcessorCount / _maxConcurrentScans, _maxConcurrentScans == 1 ? 2 : 1, 8),
                             RequiredVolumeSerial = Convert.ToUInt32(drive.Fingerprint.Split('|')[^1], 16)
                         };

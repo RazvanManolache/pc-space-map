@@ -19,9 +19,16 @@ internal static class CompactChecks
         var updated = await scanner.RefreshAsync(first, changed, null, default);
         check(updated.Root.Size == 2100 && updated.Work is { VersionsWritten: <= 4, FoldersRecalculated: 2 },
             "one-file folder refresh writes only changed records and its two ancestors");
+        check(updated.Inventory!.FolderUnchanged(other, first.SnapshotId, updated.SnapshotId)
+            && !updated.Inventory.FolderUnchanged(changed, first.SnapshotId, updated.SnapshotId),
+            "folder revision ignores unrelated changes and detects changes inside the view");
         var same = await scanner.RefreshAsync(updated, changed, null, default);
         check(same.Work is { VersionsWritten: 0, FoldersRecalculated: 0 } && same.Changes.Count == 0,
             "unchanged folder refresh reuses all existing versions without recalculating folders");
+        File.SetLastWriteTimeUtc(file, DateTime.UtcNow.AddMinutes(-1));
+        var touched = await scanner.RefreshAsync(same, file, null, default);
+        check(touched.Root.Size == same.Root.Size && !touched.Inventory!.FolderUnchanged(changed, same.SnapshotId, touched.SnapshotId),
+            "folder revision detects a metadata edit with unchanged folder totals");
         var full = await scanner.ScanAsync(root, null, default);
         if (full.Work is not { VersionsWritten: 0, FoldersRecalculated: 0 })
         {
@@ -98,9 +105,13 @@ internal static class CompactChecks
             && nested.Inventory!.Find(nested.SnapshotId, uppercase)?.Name == "Mixed.dat"
             && renamed.Changes.Any(change => change.Path == uppercase && change.Kind == "Changed"),
             "case-only renames retain the actual spelling in the new snapshot, history and changes");
+        check(!renamed.Inventory!.FolderUnchanged(newBranch, nested.SnapshotId, renamed.SnapshotId),
+            "folder revision detects case-only renames even when totals stay the same");
         File.Delete(uppercase);
         Directory.Delete(newBranch);
         var deleted = await scanner.RefreshAsync(renamed, newBranch, null, default);
+        check(!deleted.Inventory!.FolderUnchanged(newBranch, renamed.SnapshotId, deleted.SnapshotId),
+            "folder revision detects deleted subtrees through closed version intervals");
         using (var connection = deleted.Inventory!.Open())
         {
             using var ids = InventoryStore.Command(connection, "SELECT id FROM scans WHERE id<>$keep", ("$keep", deleted.SnapshotId));

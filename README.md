@@ -10,7 +10,7 @@ PC Space Map is a read-only Windows disk inventory app inspired by tools like Sp
 
 Download the [Windows x64 installer from GitHub Releases](https://github.com/RazvanManolache/pc-space-map/releases/latest). The installer includes the desktop app and an optional Windows indexing service.
 
-## Features in 2.4.9
+## Features in 2.4.10
 
 | Feature | Why it helps |
 | --- | --- |
@@ -19,7 +19,7 @@ Download the [Windows x64 installer from GitHub Releases](https://github.com/Raz
 | Notification-driven background indexing | Filesystem events trigger change-journal updates. If replay fails, the service keeps the last good index and schedules recovery. Event Viewer records the reason. |
 | Faster full scans and foreground priority | Batched NTFS metadata reads reduce per-file overhead. The service can scan separate physical disks in parallel and prioritizes a scan you request. |
 | Nested filters and indexed search | Find files by partial name, wildcard, or a modification range such as 5–10 days ago. The treemap keeps matching files inside their folders. |
-| Smooth live refresh | The treemap stays visible while the app loads the next index and replaces the chart once the updated results are ready. |
+| Lighter live updates | The service looks up affected folders directly. Folder tabs use index revisions to skip reloads when changes are elsewhere on the drive, and the treemap stays visible while new results load. |
 | Snapshot comparison and disk accounting | See which files grew, shrank, appeared, or disappeared. Compare logical size with allocated space and account for repeated hard links. |
 | Installer, tray, and startup controls | Install Start menu and desktop shortcuts, choose how the app starts at sign-in, and manage the optional service from the app. |
 | Read-only MCP access | An AI client can query completed service indexes while the desktop app is closed, using the Windows account authorized for that index. |

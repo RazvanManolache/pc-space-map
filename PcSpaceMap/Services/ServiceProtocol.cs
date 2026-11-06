@@ -16,6 +16,7 @@ public static class ServiceProtocol
     public const int MaxScanSlots = 8;
     public const string WaitingPhase = "Waiting for the index service";
     public const string PriorityWaitingPhase = "Preparing priority scan";
+    public static readonly TimeSpan SnapshotHistoryGrace = TimeSpan.FromMinutes(10);
     public static string InstallPath => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "PC Space Map Service");
     public static string DatabasePath(string baseDirectory, string root, string volume)
     {

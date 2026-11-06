@@ -84,6 +84,10 @@ public sealed class InventoryStore
     public static long? ServiceSnapshotId(string root, string databasePath) =>
         File.Exists(databasePath) ? new InventoryStore(root, databasePath, false, readOnly: true).LatestId() : null;
 
+    public bool FolderUnchanged(string folder, long before, long after) =>
+        before > 0 && before < after && DiskScanner.IsBelow(folder, RootPath)
+        && _compact?.FolderUnchanged(folder, before, after) == true;
+
     internal IDisposable KeepWalOpen()
     {
         var connection = Open();

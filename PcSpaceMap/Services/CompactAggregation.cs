@@ -61,10 +61,12 @@ internal sealed partial class CompactInventory
                 UNION SELECT n.parent FROM c_nodes n JOIN ancestors a ON n.id=a.node WHERE a.node<>$root AND n.parent<>0
             ) INSERT OR IGNORE INTO affected_folders SELECT node FROM ancestors;
             """, ("$root", _root));
+        // Drive the join from the affected nodes. Starting from cv_size would
+        // read every active directory even for a single-file journal update.
         using var folders = InventoryStore.Command(connection, """
             SELECT v.node,v.parent,v.size,v.allocated,v.unique_allocated,v.files,v.folders,v.first
-            FROM affected_folders a JOIN c_versions v ON v.node=a.node AND v.until IS NULL
-            WHERE v.dir=1 AND v.skipped=0 ORDER BY v.depth DESC,v.node DESC
+            FROM affected_folders a CROSS JOIN c_versions v INDEXED BY cv_current ON v.node=a.node
+            WHERE v.until IS NULL AND v.dir=1 AND v.skipped=0 ORDER BY v.depth DESC,v.node DESC
             """);
         using var totals = new NativeStatement(connection, """
             SELECT coalesce(sum(size),0),CASE WHEN count(allocated)=count(*) THEN coalesce(sum(allocated),0) END,

@@ -91,6 +91,8 @@ internal sealed partial class CompactInventory(InventoryStore owner)
         token.ThrowIfCancellationRequested();
         if (!HasPrevious) return;
         var scope = _full ? "" : " AND v.node IN (SELECT node FROM scope_nodes)";
+        // Look up parents from the missing nodes. An ordinary join can scan
+        // the full catalog in parent order to satisfy DISTINCT.
         InventoryStore.Execute(connection, $"""
             CREATE TEMP TABLE IF NOT EXISTS missing_nodes(node INTEGER PRIMARY KEY);
             DELETE FROM missing_nodes;
@@ -100,7 +102,7 @@ internal sealed partial class CompactInventory(InventoryStore owner)
                 WHERE v.until IS NULL AND v.dir=0 AND v.skipped=0 AND v.identity IS NOT NULL;
             INSERT OR IGNORE INTO prior_identities SELECT v.identity FROM missing_nodes m CROSS JOIN c_versions v INDEXED BY cv_current ON m.node=v.node
                 WHERE v.until IS NULL AND v.dir=0 AND v.skipped=0 AND v.identity IS NOT NULL;
-            INSERT OR IGNORE INTO affected_folders SELECT DISTINCT n.parent FROM c_nodes n JOIN missing_nodes m ON m.node=n.id WHERE n.id<>$root AND n.parent<>0;
+            INSERT OR IGNORE INTO affected_folders SELECT n.parent FROM missing_nodes m CROSS JOIN c_nodes n ON n.id=m.node WHERE n.id<>$root AND n.parent<>0;
             INSERT OR IGNORE INTO changed_nodes SELECT node FROM missing_nodes;
             UPDATE c_versions SET until=$scan WHERE until IS NULL AND node IN (SELECT node FROM missing_nodes);
             UPDATE c_spelling SET until=$scan WHERE until IS NULL AND node IN (SELECT node FROM missing_nodes);

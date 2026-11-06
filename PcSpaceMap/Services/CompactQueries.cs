@@ -178,6 +178,35 @@ internal sealed partial class CompactInventory
         while (reader.Read()) result.Add(reader.GetString(0));
         return result;
     }
+
+    internal bool FolderUnchanged(string folder, long before, long after)
+    {
+        using var connection = OpenRead();
+        var range = InventoryStore.SubtreeRange(folder);
+        // Snapshot intervals are index-maintained revisions. Check both ends so
+        // deletions and edits with unchanged folder size still invalidate the view.
+        using var query = InventoryStore.Command(connection, """
+            SELECT CASE WHEN EXISTS(
+                SELECT 1 FROM scans old JOIN scans new ON new.id=$after
+                WHERE old.id=$before AND old.completed IS NOT NULL AND new.completed IS NOT NULL AND old.issues=new.issues
+            ) AND NOT EXISTS(
+                SELECT 1 FROM scans WHERE id>$before AND id<=$after AND method NOT IN ('Folder update','NTFS journal update')
+            ) AND NOT EXISTS(
+                SELECT 1 FROM c_spelling WHERE (first>$before AND first<=$after) OR (until>$before AND until<=$after)
+            ) THEN NOT EXISTS(
+                SELECT 1 FROM c_versions v INDEXED BY cv_first LEFT JOIN c_directories d ON d.node=v.parent
+                WHERE v.first>$before AND v.first<=$after
+                    AND (v.node=$folder OR d.path=$path OR (d.path>$prefix AND d.path<$end))
+                UNION ALL
+                SELECT 1 FROM c_versions v INDEXED BY cv_end LEFT JOIN c_directories d ON d.node=v.parent
+                WHERE v.until>$before AND v.until<=$after
+                    AND (v.node=$folder OR d.path=$path OR (d.path>$prefix AND d.path<$end))
+            ) ELSE 0 END
+            """, ("$before", before), ("$after", after), ("$folder", Lookup(connection, range.Path)),
+            ("$path", range.Path), ("$prefix", range.Prefix), ("$end", range.End));
+        return (long)query.ExecuteScalar()! == 1;
+    }
+
     private static IReadOnlyList<InventoryChange> CompareChanged(SqliteConnection connection, long scan, long? previous, int limit, CancellationToken token)
     {
         if (!previous.HasValue) return [];
