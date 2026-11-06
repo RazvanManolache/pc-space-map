@@ -1,0 +1,51 @@
+name: Windows build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-dotnet@v6.1.0
+        with:
+          dotnet-version: '9.0.x'
+      - name: Run offline regression checks
+        run: dotnet run --project PcSpaceMap.Tests -c Release
+      - name: Build installer and portable payload
+        run: ./Build-Installer.ps1
+      - name: Package downloads
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $payload = 'dist/.installer-build/payload'
+          foreach ($file in @('PC Space Map.exe', 'Service/PcSpaceMap.Service.exe', 'Service/e_sqlite3.dll')) {
+            if (!(Test-Path -LiteralPath "$payload/$file")) { throw "Missing payload: $file" }
+          }
+          Copy-Item README.md, AGENT_ACCESS.md -Destination $payload
+          Copy-Item docs -Destination $payload -Recurse
+          $env:GITHUB_SHA | Set-Content "$payload/BUILD-COMMIT.txt"
+          Compress-Archive -Path "$payload/*" -DestinationPath dist/PC-Space-Map-win-x64.zip
+          $files = @(Get-ChildItem dist -File | Where-Object Extension -in '.zip', '.msi')
+          if ($files.Count -ne 2) { throw 'Expected one portable ZIP and one MSI.' }
+          $files | ForEach-Object { "$( (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() )  $($_.Name)" } | Set-Content dist/SHA256SUMS.txt
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: PC-Space-Map-win-x64
+          path: |
+            dist/*.zip
+            dist/*.msi
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 30

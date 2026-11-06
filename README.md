@@ -1,5 +1,11 @@
 # PC Space Map
 
+## Build on GitHub
+
+Open [Actions](https://github.com/RazvanManolache/pc-space-map/actions/workflows/build.yml), choose **Run workflow**, and select the branch. Builds also run on pushes and pull requests. Open a successful run and download its **Artifacts** (GitHub sign-in required; retained for 30 days).
+
+The download contains a self-contained Windows x64 portable ZIP, an MSI installer, and SHA-256 checksums. The workflow runs the offline regression suite before packaging. These are unsigned development builds.
+
 PC Space Map is a read-only Windows disk inventory app inspired by tools like SpaceSniffer. It scans a drive or folder, renders a treemap of storage usage, highlights large files, and groups conservative cleanup candidates without deleting anything.
 
 Download the [Windows x64 installer from GitHub Releases](https://github.com/RazvanManolache/pc-space-map/releases/latest). The installer includes the desktop app and an optional Windows indexing service.
