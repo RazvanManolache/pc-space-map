@@ -162,10 +162,14 @@ try
     {
         Check(Native.DeviceIoControl(sparse.SafeFileHandle, 0x900C4, IntPtr.Zero, 0, IntPtr.Zero, 0, out _, IntPtr.Zero), "create sparse fixture");
         sparse.SetLength(64 * 1024 * 1024);
-        sparse.Write(new byte[4096]);
+        // Persist a nonzero block before inspecting physical allocation. An all-zero
+        // buffered write can still look like an empty sparse extent on hosted disks.
+        sparse.Write(Enumerable.Repeat((byte)0x5a, 4096).ToArray());
+        sparse.Flush(flushToDisk: true);
     }
     var sparseInfo = WindowsVolume.ReadEntry(sparsePath);
-    Check(sparseInfo.Size == 64 * 1024 * 1024 && sparseInfo.Allocated is > 0 and < 64 * 1024 * 1024, "sparse allocated space differs from logical length");
+    Check(sparseInfo.Size == 64 * 1024 * 1024 && sparseInfo.Allocated is > 0 and < 64 * 1024 * 1024,
+        $"sparse allocated space differs from logical length (logical={sparseInfo.Size}, allocated={sparseInfo.Allocated}, attributes={sparseInfo.Attributes})");
 
     var record = new byte[80];
     BitConverter.GetBytes(72).CopyTo(record, 8);
